@@ -1,0 +1,4 @@
+jax_stream_refresh: >-
+  bash /config/shell_scripts/jax_stream_refresh.sh
+  "{{ immich_host }}" "{{ immich_api_key }}" "{{ album_id }}" "{{ stream_name }}"
+  "{{ landscape_only }}" "{{ allow_insecure }}"

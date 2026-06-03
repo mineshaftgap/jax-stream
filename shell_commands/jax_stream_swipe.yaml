@@ -1,0 +1,2 @@
+jax_stream_swipe: >-
+  bash /config/shell_scripts/jax_stream_swipe.sh "{{ stream }}" "{{ direction }}"
