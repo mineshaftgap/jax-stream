@@ -15,6 +15,8 @@ Echo Shows. When switching over to View Assist, I wanted that sweet
 reminder of my gentle giant -- so this is dedicated as a loving
 memory for him.
 
+![Jax](docs/images/jax.jpg)
+
 ## Why this exists
 
 A few Immich+HA slideshow options already exist; none of them fit a
@@ -98,14 +100,18 @@ The **Immich URL** you enter in the blueprint can use either scheme:
 | File | What it does | Required? |
 |---|---|---|
 | [`shell_scripts/jax_stream_refresh.sh`](shell_scripts/jax_stream_refresh.sh) | Fetches a random photo from Immich, applies the photo selector and landscape filter, writes `random.jpg` and sidecars | Required |
-| [`shell_commands/jax_stream_refresh.yaml`](shell_commands/jax_stream_refresh.yaml) | One-line HA `shell_command` wrapper that calls the refresh script | Required |
 | [`blueprints/automation/jax_stream.yaml`](blueprints/automation/jax_stream.yaml) | Automation blueprint -- import once, create one automation per stream | Required |
 | [`view_assist/views/clock/clock.yaml`](view_assist/views/clock/clock.yaml) | Modified VA clock view: responsive fonts, 70% text opacity, blurred-fill letterbox | Optional |
 | [`shell_scripts/jax_stream_swipe.sh`](shell_scripts/jax_stream_swipe.sh) | Swipe handler: right swipe advances; left swipe removes the photo from the Immich album then advances | Swipe only |
-| [`shell_commands/jax_stream_swipe.yaml`](shell_commands/jax_stream_swipe.yaml) | One-line `shell_command` wrapper for the swipe script | Swipe only |
 | [`www/jax_stream_swipe.js`](www/jax_stream_swipe.js) | Browser module that detects a horizontal swipe on the clock view and calls `shell_command.jax_stream_swipe`. No HACS dependency | Swipe only |
+| [`shell_commands/jax_stream_refresh.yaml`](shell_commands/jax_stream_refresh.yaml) | Drop-in for split `shell_commands/` setups -- contents are what you paste in step 2 for a standard install | Advanced only |
+| [`shell_commands/jax_stream_swipe.yaml`](shell_commands/jax_stream_swipe.yaml) | Drop-in for split `shell_commands/` setups -- contents are what you paste in step 2 for a standard install | Advanced only |
 
 ## Install
+
+> **Using a split `shell_commands/` dir or `packages/`?** See
+> [Advanced config layouts](#advanced-config-layouts) for drop-in instructions
+> before starting.
 
 ### 1. Copy the files into your HA config
 
@@ -113,7 +119,6 @@ Place each file at the matching path under your `/config/`:
 
 ```
 /config/shell_scripts/jax_stream_refresh.sh
-/config/shell_commands/jax_stream_refresh.yaml
 /config/blueprints/automation/jax_stream/jax_stream.yaml
 /config/view_assist/views/clock/clock.yaml   (OPTIONAL -- cosmetic only; back up the original first)
 ```
@@ -130,22 +135,31 @@ distro's cosmetic tweaks; see [About the modified `clock.yaml`](#about-the-modif
 
 ### 2. Wire up `shell_command`
 
-If your `configuration.yaml` already does:
+> **Using a split `shell_commands/` dir or `packages/`?** See
+> [Advanced config layouts](#advanced-config-layouts).
+
+Open `/config/configuration.yaml` and add (or merge into an existing
+`shell_command:` block):
 
 ```yaml
-shell_command: !include_dir_merge_named shell_commands
+shell_command:
+  jax_stream_refresh: >-
+    bash /config/shell_scripts/jax_stream_refresh.sh
+    "{{ immich_host }}" "{{ immich_api_key }}" "{{ album_id }}" "{{ stream_name }}"
+    "{{ landscape_only }}" "{{ allow_insecure }}"
 ```
 
-(or similar), you're done -- the file is picked up automatically.
+If you plan to use swipe gestures, add the second entry too:
 
-If you use an inline `shell_command:` block in `configuration.yaml`,
-paste the contents of `shell_commands/jax_stream_refresh.yaml` under it.
-
-> **Note:** each file in the `shell_commands/` directory must contain
-> bare key-value pairs (no `shell_command:` wrapper at the top). If your
-> setup uses `!include_dir_merge_named`, adding a wrapper makes the
-> entire `shell_command` integration fail silently -- all commands
-> disappear without an obvious error.
+```yaml
+shell_command:
+  jax_stream_refresh: >-
+    bash /config/shell_scripts/jax_stream_refresh.sh
+    "{{ immich_host }}" "{{ immich_api_key }}" "{{ album_id }}" "{{ stream_name }}"
+    "{{ landscape_only }}" "{{ allow_insecure }}"
+  jax_stream_swipe: >-
+    bash /config/shell_scripts/jax_stream_swipe.sh "{{ stream }}" "{{ direction }}"
+```
 
 ### 3. Create one automation per stream from the blueprint
 
@@ -257,19 +271,28 @@ not interfere with View Assist's tap-to-navigate on other views.
 1. **Install the swipe files** (in addition to the basic ones):
    ```
    /config/shell_scripts/jax_stream_swipe.sh
-   /config/shell_commands/jax_stream_swipe.yaml   (merge like the refresh one)
    /config/www/jax_stream_swipe.js
    ```
-2. **Register the browser module.** In `configuration.yaml`:
+   Then add the swipe entry to your `shell_command:` block in `configuration.yaml`
+   (see [step 2](#2-wire-up-shell_command) above for the YAML to paste).
+
+2. **Register the browser module.** Add to `configuration.yaml`:
+
    ```yaml
    frontend:
      extra_module_url:
        - /local/jax_stream_swipe.js?v=1
    ```
-   (`/config/www/` is served at `/local/`.) `extra_module_url` is read at
-   startup, so **restart HA**, then reload the device's WebView once. When
-   you later update `jax_stream_swipe.js`, bump the integer (`?v=2`, `?v=3`,
-   ...) and restart, or the browser keeps the cached copy.
+
+   (`/config/www/` is served at `/local/`.) If you already have a `frontend:`
+   block, append the entry to the existing `extra_module_url` list rather than
+   adding a second `frontend:` key. For `packages/` layouts, see
+   [Advanced config layouts](#advanced-config-layouts).
+
+   `extra_module_url` is read at startup, so **restart HA**, then reload the
+   device's WebView once. When you later update `jax_stream_swipe.js`, bump
+   the integer (`?v=2`, `?v=3`, ...) and restart, or the browser keeps the
+   cached copy.
 3. **Enable swipe in the blueprint.** Open the automation created from the
    Jax Stream blueprint, find the **Enable swipe** toggle, and turn it on.
    If you want swipe-left to remove photos from the album, make sure your
@@ -312,6 +335,47 @@ data:
 
 Then navigate any device off the clock view and back (or wait for
 the auto-revert timeout) so the WebView refetches.
+
+## Advanced config layouts
+
+If you use a split `shell_commands/` directory or a `packages/` setup, the
+files in this distro slot straight in without any `configuration.yaml` edit.
+
+**Split `shell_commands/` directory**
+
+If `configuration.yaml` already has:
+
+```yaml
+shell_command: !include_dir_merge_named shell_commands
+```
+
+place the `.yaml` files from `shell_commands/` into `/config/shell_commands/`
+and they are picked up automatically on next restart. No `configuration.yaml`
+edit needed.
+
+> **Note:** every file in that directory must contain bare key-value pairs at
+> the top level -- no `shell_command:` wrapper. A wrapped file silently kills
+> the entire `shell_command` integration (all commands vanish with no obvious
+> error).
+
+**`packages/` directory**
+
+Create `/config/packages/jax_stream.yaml` (any filename works) and put the
+`shell_command:` block from install step 2 inside it. If `configuration.yaml`
+does not already load the packages directory, add:
+
+```yaml
+homeassistant:
+  packages: !include_dir_named packages
+```
+
+For the swipe `frontend:` entry, put it in the same package file:
+
+```yaml
+frontend:
+  extra_module_url:
+    - /local/jax_stream_swipe.js?v=1
+```
 
 ## Troubleshooting
 
