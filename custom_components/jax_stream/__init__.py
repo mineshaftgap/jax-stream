@@ -98,6 +98,14 @@ SCHEMA_SET_RATING = vol.Schema(
     }
 )
 
+SCHEMA_REMOVE = vol.Schema(
+    {
+        vol.Optional("entity_id"): cv.entity_id,
+        vol.Optional("stream"): cv.string,
+        vol.Optional("asset_id"): cv.string,
+    }
+)
+
 
 def _compute_js_hash(path: str) -> str:
     """Return first 12 hex chars of sha256 of the file at path.
@@ -158,7 +166,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     async def handle_remove(call: ServiceCall) -> None:
         coord = await _resolve_coordinator(call)
-        await coord.async_remove()
+        asset_id = call.data.get("asset_id") or None
+        await coord.async_remove(asset_id)
 
     async def handle_set_rating(call: ServiceCall) -> None:
         coord = await _resolve_coordinator(call)
@@ -179,7 +188,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     hass.services.async_register(DOMAIN, SERVICE_REFRESH, handle_refresh, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_NEXT, handle_next, schema=SCHEMA_STREAM_TARGET)
-    hass.services.async_register(DOMAIN, SERVICE_REMOVE, handle_remove, schema=SCHEMA_STREAM_TARGET)
+    hass.services.async_register(DOMAIN, SERVICE_REMOVE, handle_remove, schema=SCHEMA_REMOVE)
     hass.services.async_register(DOMAIN, SERVICE_SET_RATING, handle_set_rating, schema=SCHEMA_SET_RATING)
     hass.services.async_register(DOMAIN, SERVICE_TOUCH, handle_touch, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_PAUSE, handle_pause, schema=SCHEMA_STREAM_TARGET)

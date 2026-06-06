@@ -307,12 +307,17 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self._current_rating = rating
         self.async_update_listeners()
 
-    async def async_remove(self) -> None:
+    async def async_remove(self, asset_id: str | None = None) -> None:
         """Remove current photo with recovery-first fail-safe, then advance (D-12).
+
+        Uses caller-provided asset_id (JS tap-time snapshot) when available to prevent
+        the race where auto-advance fires during the confirm dialog window and updates
+        current_asset_id before the user confirms. Falls back to self.current_asset_id.
 
         ORDER IS LOAD-BEARING (Pitfall 3): add-to-recovery must succeed BEFORE source delete.
         """
-        asset_id = self.current_asset_id
+        if not asset_id:
+            asset_id = self.current_asset_id
         if not asset_id:
             raise ServiceValidationError("No current asset to remove")
         album_id = self.settings.album_id

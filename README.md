@@ -4,15 +4,8 @@
 
 Drop-in slideshow that cycles through an Immich album's photos as the
 background of a dedicated [View Assist](https://github.com/dinki/View-Assist)
-view on your displays. Supports multiple independent
-streams so different displays can show different albums.
-
-> **Now repackaging as a HACS custom integration.** A Python `jax_stream`
-> integration (config flow + coordinator + native `image` entity) now drives
-> the core slideshow fetch loop -- no `shell_command` or refresh blueprint
-> required for photos to advance. The manual-install path below (shell + blueprint)
-> still works and remains documented; the full install-story rewrite lands later
-> in the repackaging milestone.
+view on your displays. Supports multiple independent streams so different
+displays can show different albums. Packaged as a HACS custom integration.
 
 ## Dedication
 
@@ -35,469 +28,173 @@ View Assist install without compromises:
 | [mulder82/immich-slideshow](https://github.com/mulder82/immich-slideshow) (HACS) | Active and maintained, but POSTs `/api/search/random` with no `albumIds` filter -- you get a random asset from the whole library, not from one album. No per-device targeting |
 | [outadoc/immich-home-assistant](https://github.com/outadoc/immich-home-assistant) (HACS) | Has album filtering, but unmaintained for 2+ years, 5-minute interval hardcoded, broken on HA 2025.6+ |
 
-This distro is the "no extra container" middle
-ground: pure HA core + View Assist, per-album streams, multi-device
-per-stream targeting -- with the core slideshow now packaged as a first-class
-HA custom integration (config flow + coordinator + `image` entity) rather than
-a separate Docker service. The original handful of HA primitives (a
-`shell_command` and a blueprint automation) still exist as the documented
-manual-install path.
+Jax Stream is the "no extra container" middle ground: VA-native, per-device, no extra container -- packaged as a first-class HA custom integration (config flow + coordinator + image entity).
 
-## What you get
+## Features
 
-- Rotating photo background on each VA device, default 1-minute interval
-  (configurable per stream; VA's polling minimum is 1 minute, so anything
-  faster won't reach the display sooner)
-- Dedicated jax-stream VA view: time + weather positioned bottom-left over
-  the photo, 70% text opacity (no dark overlay needed), blurred-fill behind
-  a `contain`-letterboxed photo (so portrait shots don't get black bars)
-- Responsive sizing: works on 960x480 (e.g. Echo Show 5) and 1280x800
-  (e.g. Echo Show 8) without tweaks
-- Per-device stream targeting (e.g. landscapes in the living room,
-  family photos in the kitchen, kids' artwork at the office)
+- Rotating Immich photo background per VA device, default 1-minute interval (configurable per stream)
+- Native HA `image` entity plus `button`, `switch`, and `select` control entities per stream
+- `jax_stream` services: refresh, next, remove, set_rating, pause, resume -- callable from automations, scripts, the mobile app, and voice assistants
+- On-screen jaxmenu actions: swipe right to advance, swipe left for up-to-10 blob history back-nav; remove from album, star rating (1-5 + Unrate), pause toggle
+- Dedicated auto-registered jax-stream VA view (blurred-fill letterbox, 70% text opacity)
+- Per-device per-stream targeting -- different albums on different displays
+- Integration-served frontend module -- no manual `frontend:` config needed
+- Responsive sizing: works on 960x480 (Echo Show 5) and 1280x800 (Echo Show 8) without tweaks
 
 ## Prerequisites
 
-- Home Assistant with the View Assist integration installed and at least
-  one device set up
+- Home Assistant with the View Assist integration installed and at least one device set up
 - An Immich server reachable from your HA host, with at least one album
-- An Immich API key with `asset.read` and `asset.view` scopes
-  (Account Settings -> API Keys -> New API Key). If you plan to enable
-  swipe, also add `albumAsset.delete` so the jaxmenu can remove
-  photos from the album; add `albumAsset.create` too if you set a
-  Remove-to recovery album (see Blueprint options)
-- Shell or file access to your `/config/` directory
-- Both `python3` and `curl` available in HA's environment -- `curl` does
-  the HTTP requests (POST search/random, GET thumbnail bytes), `python3`
-  parses the one-line JSON response to pull the asset id out (avoiding a
-  `jq` dependency). HA OS and HA Container both include both; HA Core
-  inherits from the host
+- An Immich API key with `asset.read` and `asset.view` scopes (add `asset.update` for star rating, `albumAsset.delete` for jaxmenu remove, and `albumAsset.create` if you set a recovery album -- see "Required Immich API key scopes" below)
+- HACS installed (you already run it for View Assist)
 
-## Immich over HTTP or HTTPS (incl. self-signed certs)
+## Installation
 
-The **Immich URL** you enter in the blueprint can use either scheme:
+### HACS (Recommended)
 
-- **`http://...`** works with no changes -- e.g. `http://10.0.0.5:2283`
-  or `http://immich.local:2283`. `curl` does plain HTTP; nothing to edit.
-- **`https://...` with a publicly-trusted (or already-installed CA)
-  cert** also works as-is.
-- **`https://...` with a self-signed / private-CA cert** fails by
-  default: `curl` aborts with a certificate-verification error, `set -e`
-  stops the script, and the photo never updates. Two ways to fix it:
+1. Open HACS in Home Assistant
+2. Click the three dots in the top right and select **Custom repositories**
+3. Add the repository URL: `https://github.com/mineshaftgap/jax-stream`
+4. Select **Integration** as the category and click **Add**
+5. Search for "Jax Stream" in HACS and download it
+6. Restart Home Assistant
+7. Add the integration via Settings -> Devices & Services -> **Add Integration**
+8. Fill the config-flow form:
+   - **Stream name**: short identifier for this stream (e.g. `family`)
+   - **Immich URL**: e.g. `http://10.0.0.5:2283` or `https://immich.example.com`
+   - **Immich API key**: from Account Settings -> API Keys
+   - **Immich album ID**: UUID from your Immich album page URL
+   - **Refresh interval**: how often to fetch a new photo (default 1 minute)
+   - **Landscape only**: filter out portrait photos
+   - **Allow insecure HTTPS**: tick only for a self-signed / private-CA Immich cert; leave off for `http://` or a publicly-trusted `https://`
 
-  1. **Tick "Allow insecure HTTPS" in the blueprint (quick, less secure).**
-     The blueprint has an `allow_insecure` checkbox (default off). When on,
-     the scripts add `-k` (`--insecure`) to **every** `curl` -- search,
-     thumbnail calls -- so a self-signed setup works with no
-     script edit. This turns off TLS cert checking entirely: fine on a
-     trusted LAN, not for traffic crossing untrusted networks. Leave it off
-     for `http://`, publicly-trusted `https://`, or an installed CA.
-  2. **Point `curl` at your CA cert (more secure, manual).** Keeps
-     verification on. Put the CA / self-signed cert where HA can read it
-     (e.g. `/config/immich-ca.crt`) and insert it into the `CURL_OPTS`
-     array near the top of each script:
+That is the whole install -- no YAML editing, no shell scripts, no manual view
+registration. To add another stream for another device, repeat "Add Integration"
+with a different album ID and stream name. Edit any stream later via its options
+flow (also where you set an optional Remove-to recovery album).
 
-     ```bash
-     CURL_OPTS=(-fsS --cacert /config/immich-ca.crt)
-     ```
+### Manual Installation
 
-  (Most lab setups just point the blueprint at the plain-`http://` Immich
-  address on the LAN and skip all of this.)
+1. Copy `custom_components/jax_stream/` into your HA `custom_components/` directory
+2. Restart Home Assistant
+3. Add the integration via Settings -> Devices & Services -> Add Integration and fill the config-flow form (same fields as above)
 
-## Files in this distro
+## Entities
 
-| File | What it does | Required? |
-|---|---|---|
-| [`shell_scripts/jax_stream_refresh.sh`](shell_scripts/jax_stream_refresh.sh) | Fetches a random photo from Immich, applies the photo selector and landscape filter, writes `random.jpg` and sidecars | Required |
-| [`blueprints/automation/jax_stream.yaml`](blueprints/automation/jax_stream.yaml) | Automation blueprint -- import once, create one automation per stream | Required |
-| [`view_assist/views/jax-stream/jax-stream.yaml`](view_assist/views/jax-stream/jax-stream.yaml) | Standalone VA view: time + weather bottom-left, 70% text opacity, blurred-fill letterbox. Register with VA in install step 5 | Required |
-| [`shell_scripts/jax_stream_swipe.sh`](shell_scripts/jax_stream_swipe.sh) | Swipe handler: right swipe advances; direction=left (called by jaxmenu remove flow) removes from album then advances | Swipe only |
-| [`www/jax_stream.js`](www/jax_stream.js) | Browser module: swipe gesture detection, menu polling, rating/remove overlays | Swipe only |
-| [`shell_commands/jax_stream_refresh.yaml`](shell_commands/jax_stream_refresh.yaml) | Drop-in for split `shell_commands/` setups -- contents are what you paste in step 2 for a standard install | Advanced only |
-| [`shell_commands/jax_stream_swipe.yaml`](shell_commands/jax_stream_swipe.yaml) | Drop-in for split `shell_commands/` setups -- contents are what you paste in step 2 for a standard install | Advanced only |
+Per stream (visible in Settings -> Devices & Services -> Jax Stream -> the per-stream device card):
 
-## Install
+- `image.jax_stream_<id>` -- current photo (served by the integration)
+- `button.jax_stream_<id>` -- press to advance to the next photo
+- `switch.jax_stream_<id>` -- on = paused, off = resume
+- `select.jax_stream_<id>` -- change the active album from your Immich library
 
-> **Using a split `shell_commands/` dir or `packages/`?** See
-> [Advanced config layouts](#advanced-config-layouts) for drop-in instructions
-> before starting.
+## Services
 
-### 1. Copy the files into your HA config
+Services in the `jax_stream` domain, callable from automations, scripts, the
+mobile app, and voice assistants:
 
-Place each file at the matching path under your `/config/`:
-
-```
-/config/shell_scripts/jax_stream_refresh.sh
-/config/blueprints/automation/jax_stream/jax_stream.yaml
-/config/view_assist/views/jax-stream/jax-stream.yaml
-```
-
-(The `jax_stream/` subdir under `blueprints/automation/` is a
-namespacing convention; HA expects blueprints to live in author/name
-subdirectories.)
-
-See [About the jax-stream view](#about-the-jax-stream-view) for what
-the bundled view adds. After copying the file, register it with VA and
-set it as the home screen in install step 5 -- do not skip this or VA
-will not know the view exists.
-
-### 2. Wire up `shell_command`
-
-> **Using a split `shell_commands/` dir or `packages/`?** See
-> [Advanced config layouts](#advanced-config-layouts).
-
-Open `/config/configuration.yaml` and add (or merge into an existing
-`shell_command:` block):
-
-```yaml
-shell_command:
-  jax_stream_refresh: >-
-    bash /config/shell_scripts/jax_stream_refresh.sh
-    "{{ immich_host }}" "{{ immich_api_key }}" "{{ album_id }}" "{{ stream_name }}"
-    "{{ landscape_only }}" "{{ allow_insecure }}" "{{ queue_size | default(3) }}"
-```
-
-If you plan to use swipe gestures, add the second entry too:
-
-```yaml
-shell_command:
-  jax_stream_refresh: >-
-    bash /config/shell_scripts/jax_stream_refresh.sh
-    "{{ immich_host }}" "{{ immich_api_key }}" "{{ album_id }}" "{{ stream_name }}"
-    "{{ landscape_only }}" "{{ allow_insecure }}" "{{ queue_size | default(3) }}"
-  jax_stream_swipe: >-
-    bash /config/shell_scripts/jax_stream_swipe.sh "{{ stream }}" "{{ direction }}"
-```
-
-### 3. Create one automation per stream from the blueprint
-
-Each "stream" is one Immich album feeding one (or more) View Assist
-devices' background. The blueprint shipped in this distro creates
-one automation per stream.
-
-In HA: Settings -> Automations & Scenes -> Blueprints. The "Jax Stream"
-row appears in the list:
-
-![Jax Stream in the Blueprints list](docs/screenshots/blueprints-list-jax-stream.png)
-
-Click the "Jax Stream" row (or its overflow menu -> **Create automation**)
-to open the instance form, then fill in:
-
-- **Immich URL**: e.g. `https://immich.example.com` (no trailing slash)
-- **Immich API key**: a key with `asset.read` + `asset.view` scopes
-- **Immich album ID**: UUID from your Immich album page URL
-- **Stream name**: short identifier, no spaces (e.g. `family`,
-  `landscapes`). This becomes the subdirectory under
-  `/config/view_assist/images/jax-stream/` and the value you
-  type into each device's VA Dashboard Options path field
-- **Refresh interval**: `Every minute` is the default; pick slower
-  if you want photos to linger
-
-![Blueprint instance form with all five inputs](docs/screenshots/blueprint-instance-form.png)
-
-Click **Save**. HA then prompts with a **Rename** dialog (the name
-defaults to "Jax Stream") -- accept it, or give each stream a distinct
-name (e.g. "Jax Stream: family") so multiple streams are easy to tell
-apart. Confirm to finish creating the automation. Repeat for each
-additional stream/album.
-
-You can verify it ticked by checking that the file
-`/config/view_assist/images/jax-stream/<stream_name>/random.jpg`
-appears within a minute and its timestamp updates on the chosen interval.
-
-### 4. Restart Home Assistant
-
-`shell_command` changes are picked up only on a full HA restart --
-there is no reload service for it. Restart from Settings -> System ->
-Restart, or via Developer Tools.
-
-After the restart, automations created from the blueprint are already
-active. If you later change the blueprint file itself, reload automations
-(Developer Tools -> YAML -> Automations) without a full restart.
-
-### 5. Register the jax-stream view and configure View Assist
-
-**Register the jax-stream view (one-time).** In HA go to Developer
-Tools -> Actions. Call:
-
-```yaml
-action: view_assist.load_asset
-data:
-  asset_class: views
-  name: jax-stream
-  download_from_repo: false
-```
-
-This registers the view in VA's Lovelace storage from the local file
-you copied in step 1. Do this once; repeat it only if you later update
-the file and want VA to pick up the change. If the call returns a 500
-error, ignore it -- VA registers the view before the error is thrown.
-
-**Set the Home screen (Master Configuration).** Settings -> Devices &
-Services -> View Assist -> Master Configuration -> Configure ->
-Dashboard Options:
-
-- **Home screen**: `/view-assist/jax-stream`
-
-> **Warning:** the VA Dashboard Options form is a full-form resend.
-> Any field you leave blank or any section you send as empty is
-> **deleted** from your saved config. Always fill in every field that
-> appears pre-filled; only change the field you intend to change.
-> Close the dialog with X if you do not want to save.
-
-![Master Configuration Dashboard Options with Home screen set to /view-assist/jax-stream](docs/screenshots/va-dashboard-options-home.png)
-
-**Configure the background on each device.** Settings -> Devices &
-Services -> View Assist -> *your device* -> Configure -> Dashboard
-Options -> Background Settings:
-
-- **Background image source**: `Random image from local file path`
-- **Path field**: `images/jax-stream/<stream_name>` (e.g.
-  `images/jax-stream/default`). No leading slash, no `www/`,
-  no `/config/` prefix -- VA prepends `/config/view_assist/` itself.
-- **Default background**: leave empty
-- **Rotation interval**: `1` (minute -- VA's minimum)
-
-![View Assist per-device Dashboard Options with the jax-stream path filled in](docs/screenshots/va-dashboard-options-path.png)
-
-Submit. Within a minute, the jax-stream view should show a photo from
-your album and advance every minute thereafter:
-
-![Echo Show with the jax-stream view and an Immich photo background](docs/screenshots/echo-show-clock-result.png)
-
-**Optional: add jax-stream to cycle views.** If you use VA's cycle mode
-(devices rotate through a list of views on a timer), add `jax-stream`
-to the Master Configuration Cycle views list. Settings -> Devices &
-Services -> View Assist -> Master Configuration -> Configure ->
-Dashboard Options -> Display Settings -> **Cycle views**: replace the
-`clock` entry with `jax-stream`, or add `jax-stream` alongside the
-existing entries.
-
-![Master Configuration Display Settings showing Cycle views](docs/screenshots/va-display-settings-cycle-views.png)
-
-## Multi-stream
-
-To add a second stream (e.g. a different album for a different device):
-
-1. Repeat install step 3: create another automation from the same
-   blueprint, with a different `album_id` and a different `stream_name`
-2. Point the target device's VA Dashboard Options path field at
-   `images/jax-stream/<new_stream_name>`
-
-You can vary the refresh interval per stream too -- pick slower for
-a quiet bedroom, faster for the kitchen.
-
-## Blueprint inputs
-
-Each automation created from the blueprint is one stream. The instance form
-asks for:
-
-| Input | What it does |
+| Service | What it does |
 |---|---|
-| **Immich URL** | Base URL, no trailing slash (a stray one is tolerated) |
-| **Immich API key** | `asset.read` + `asset.view` |
-| **Immich album ID** | UUID from the album page URL |
-| **Remove-to album ID** | Optional recovery album UUID. When set, removing a photo files it here before removing it from the source album. Needs `albumAsset.create` scope. Blank = remove without re-filing |
-| **Stream name** | Subdir under `images/jax-stream/`; also the VA path value |
-| **Refresh interval** | How often to fetch a new photo |
-| **Landscape only** | Keep only landscape photos (over-fetch + filter) |
-| **Enable swipe** | Turn on swipe gestures (requires swipe file install; adds `albumAsset.delete` scope requirement for jaxmenu remove) |
-| **Allow insecure HTTPS** | Add `curl -k` for self-signed certs (default off) |
-| **Prefetch queue size** | Photos to keep ready in advance (default 3: 1 displayed + 2 queued). 1 = classic single-photo behavior |
+| `jax_stream.refresh` | Force-fetch a new photo (bypasses pause gate) |
+| `jax_stream.next` | Advance to the next queued photo |
+| `jax_stream.remove` | Remove current photo from source album (recovery-first if configured) |
+| `jax_stream.set_rating` | Set Immich star rating 1-5 (0 = unrate) |
+| `jax_stream.pause` | Pause auto-advance |
+| `jax_stream.resume` | Resume (clears both manual pause and touch-window) |
 
-## Swipe
+## Usage
 
-Swipe **right** to advance to the next photo. Swipe **left** to go back to
-the previous photo, walking an in-memory history of up to 10 recently shown
+Swipe **right** to advance to the next photo. Swipe **left** to go back to the
+previous photo, walking an in-memory blob history of up to 10 recently shown
 photos; swipe right from history moves forward again, and at the end of the
 history the queue resumes normally. Back-navigation is local to the device --
-it touches no server state and does not trigger a queue refill.
+it touches no server state.
 
 To remove a photo from the album, open the jaxmenu (tap the jaxicon in the
-top-left corner) and select Remove. This calls Immich's
-`DELETE /api/albums/{id}/assets` endpoint,
-which removes the photo from the album without deleting the underlying asset
-from your library.
+top-left corner) and select Remove. This calls `jax_stream.remove`, which
+removes the photo from the album without deleting the underlying asset from your
+Immich library.
 
-If you set a **Remove-to album ID** in the blueprint, Remove first adds the
-photo to that recovery album (via `PUT /api/albums/{id}/assets`, requiring the
-`albumAsset.create` scope) and then removes it from the source album. This
-gives you a place to recover accidental removals -- handy while testing.
+If you set a **Remove-to album ID** in the stream's options flow, Remove first
+adds the photo to that recovery album and then removes it from the source album.
+Fail-safe: if the recovery add fails, the source removal is aborted -- the
+photo stays put.
 
-The swipe module fires only when a Jax Stream photo is on screen, so it does
-not interfere with View Assist's tap-to-navigate on other views.
+The jaxmenu Rate item opens a star-rating overlay (1-5 + Unrate). Tap to rate;
+the rating is sent to Immich via `jax_stream.set_rating`.
 
-### Enabling swipe (one-time setup)
+The jaxmenu first item is a Pause toggle. While manually paused, a play-triangle
+indicator appears near the jaxicon; tap it to resume. Any screen touch also arms
+a silent 90-second suppression window before auto-advance resumes.
 
-1. **Install the swipe files** (in addition to the basic ones):
-   ```
-   /config/shell_scripts/jax_stream_swipe.sh
-   /config/www/jax_stream.js
-   ```
-   Then add the swipe entry to your `shell_command:` block in `configuration.yaml`
-   (see [step 2](#2-wire-up-shell_command) above for the YAML to paste).
+## The jax-stream view
 
-2. **Register the browser module.** Add to `configuration.yaml`:
+The integration auto-copies and auto-registers the jax-stream VA view
+(`/view-assist/jax-stream`) at setup. No manual `view_assist.load_asset` call
+is needed.
 
-   ```yaml
-   frontend:
-     extra_module_url:
-       - /local/jax_stream.js?v=1
-   ```
+Three styling differences from VA's stock clock view:
 
-   (`/config/www/` is served at `/local/`.) If you already have a `frontend:`
-   block, append the entry to the existing `extra_module_url` list rather than
-   adding a second `frontend:` key. For `packages/` layouts, see
-   [Advanced config layouts](#advanced-config-layouts).
+- **Responsive font sizes** using `vh`/`vw` units instead of fixed `%` sizes
+  that overflow smaller screens
+- **70% text opacity** via `rgba(255, 255, 255, 0.7)` plus `text-shadow`/`drop-shadow`
+  -- the photo shows through without a dark overlay
+- **Blurred-fill background** via `ha-card::before` (blurred cover) and
+  `ha-card::after` (sharp contain). The whole photo is visible, and letterbox bars
+  (for portrait photos on a landscape screen) are filled with a blurred version
+  of the same image
 
-   `extra_module_url` is read at startup, so **restart HA**, then reload the
-   device's WebView once. When you later update `jax_stream.js`, bump
-   the integer (`?v=2`, `?v=3`, ...) and restart, or the browser keeps the
-   cached copy.
-3. **Enable swipe in the blueprint.** Open the automation created from the
-   Jax Stream blueprint, find the **Enable swipe** toggle, and turn it on.
-   If you want to use the jaxmenu remove-from-album action, make sure
-   your Immich API key has the `albumAsset.delete` scope before saving.
+**Set the home screen and background mode (one-time, VIEW-03).** Settings ->
+Devices & Services -> View Assist -> Master Configuration -> Configure ->
+Dashboard Options. Set two fields:
 
-## About the jax-stream view
+- **Home screen**: `/view-assist/jax-stream`
+- **Background settings -> Background mode**: `local_random`
+- **Background settings -> Rotate background path**: `images/jax-stream/<stream>`
+  (replace `<stream>` with the stream name you entered in the config-flow form)
 
-The bundled `view_assist/views/jax-stream/jax-stream.yaml` is a
-standalone VA view at `/view-assist/jax-stream` that serves as each
-device's home screen. It leaves VA's stock `clock` view untouched.
-Three styling differences from VA's stock `clockalt.yaml`:
+Without `local_random`, VA uses its default blue gradient -- the Immich photos
+will not appear even if the integration is running correctly.
 
-- **Responsive font sizes** using `vh` / `vw` units (`30vh` time,
-  `8vh` weather text, `10vw` weather icon) instead of fixed `%`
-  sizes that overflow smaller screens
-- **70% text opacity** via `color: rgba(255, 255, 255, 0.7)` plus
-  `text-shadow` / `drop-shadow` for legibility -- the photo shows
-  through without a dark overlay layer
-- **Blurred-fill background** via `extra_styles` injecting
-  `ha-card::before` (blurred cover) and `ha-card::after` (sharp
-  contain). The whole photo is visible, and letterbox bars (for
-  portrait photos on a landscape screen) are filled with a blurred
-  version of the same image
-
-**How it is registered.** VA does not auto-scan the `views/` directory.
-The install step 5 call to `view_assist.load_asset` with
-`name: jax-stream, download_from_repo: false` writes the view into
-VA's Lovelace storage from the local file. Re-run it whenever you copy
-an updated `jax-stream.yaml` into place:
-
-```yaml
-action: view_assist.load_asset
-data:
-  asset_class: views
-  name: jax-stream
-  download_from_repo: false
-```
-
-Then navigate any device off the jax-stream view and back (or wait
-for the auto-revert timeout) so the WebView refetches.
-
-**Clock view is not affected.** Calling `view_assist.load_asset` for
-`clock` with `download_from_repo: true` overwrites only the clock view.
-The jax-stream view is a separate entry in VA's dashboard storage and
-is not touched by clock updates.
-
-## Advanced config layouts
-
-If you use a split `shell_commands/` directory or a `packages/` setup, the
-files in this distro slot straight in without any `configuration.yaml` edit.
-
-**Split `shell_commands/` directory**
-
-If `configuration.yaml` already has:
-
-```yaml
-shell_command: !include_dir_merge_named shell_commands
-```
-
-place the `.yaml` files from `shell_commands/` into `/config/shell_commands/`
-and they are picked up automatically on next restart. No `configuration.yaml`
-edit needed.
-
-> **Note:** every file in that directory must contain bare key-value pairs at
-> the top level -- no `shell_command:` wrapper. A wrapped file silently kills
-> the entire `shell_command` integration (all commands vanish with no obvious
-> error).
-
-**`packages/` directory**
-
-Create `/config/packages/jax_stream.yaml` (any filename works) and put the
-`shell_command:` block from install step 2 inside it. If `configuration.yaml`
-does not already load the packages directory, add:
-
-```yaml
-homeassistant:
-  packages: !include_dir_named packages
-```
-
-For the swipe `frontend:` entry, put it in the same package file:
-
-```yaml
-frontend:
-  extra_module_url:
-    - /local/jax_stream.js?v=1
-```
-
-## Troubleshooting
-
-- **Automation fires but file doesn't appear/update**: check HA logs
-  for the `shell_command`'s stderr. Most common: typo in the
-  `immich_host` or `immich_api_key` value you entered in the blueprint
-  form; Immich unreachable from the HA host (try `curl` from inside
-  the HA container); `album_id` doesn't match a real album; or an
-  `https://` Immich with a self-signed cert that `curl` won't trust
-  (see [Immich over HTTP or HTTPS](#immich-over-http-or-https-incl-self-signed-certs)).
-  `set -e` in the shell_command means the first failing `curl` aborts
-  the rest, so the file just won't update.
-- **File updates but display doesn't change**: VA might be in
-  `DEFAULT_BACKGROUND` mode (cache-buster frozen). Confirm Dashboard
-  Options shows `Random image from local file path`.
-- **Background goes black / broken image**: the path field is usually
-  wrong. It should be `images/jax-stream/<stream>`, never
-  `/config/view_assist/...` or `www/...` -- VA prepends
-  `/config/view_assist/` itself.
-- **All devices show the same photo / wrong album**: each device's
-  Dashboard Options path field needs to point at that device's stream.
-- **`shell_command` entities missing after restart**: if all
-  `shell_command.*` services vanish, check the HA system log for
-  `Invalid config for 'shell_command'`. A YAML file in `shell_commands/`
-  with a `shell_command:` wrapper at the top (instead of bare key-value
-  pairs) silently kills the entire integration. Remove the wrapper and restart.
+> **Warning:** the VA Dashboard Options form is a full-form resend. Any field
+> you leave blank or any section you send as empty is **deleted** from your
+> saved config. Always fill in every field that appears pre-filled; only change
+> the field you intend to change. Close the dialog with X if you do not want
+> to save.
 
 ## Required Immich API key scopes
 
-Verified against `server/src/enum.ts` and the asset-media/search
-controllers on the Immich `main` branch:
+Verified against `server/src/enum.ts` and the asset-media/search controllers:
 
 | Endpoint | Scope | When |
 |---|---|---|
 | `POST /api/search/random` | `asset.read` | always |
 | `GET /api/assets/{id}/thumbnail?size=preview` | `asset.view` | always |
+| `PUT /api/assets/{id}` | `asset.update` | jaxmenu star rating |
 | `DELETE /api/albums/{id}/assets` | `albumAsset.delete` | jaxmenu remove only |
 | `PUT /api/albums/{id}/assets` | `albumAsset.create` | only when a Remove-to (recovery) album is set |
 
-Basic slideshow: **`asset.read` + `asset.view`**. Add
-**`albumAsset.delete`** if you use the jaxmenu remove-from-album action,
-and **`albumAsset.create`** as well if you set a Remove-to recovery album so
-removed photos are re-filed there. `asset.download` is not needed -- thumbnail/preview is what
-we use, and it's also what most WebViews can render (the `/original` endpoint
-returns the raw file, which for HEIC iPhone photos most WebViews cannot
-display).
+Basic slideshow: **`asset.read` + `asset.view`**. Add **`asset.update`** to
+use the jaxmenu star-rating overlay. Add **`albumAsset.delete`** for the
+jaxmenu remove-from-album action, and **`albumAsset.create`** as well if you
+set a Remove-to recovery album so removed photos are re-filed there.
+`asset.download` is not needed -- thumbnail/preview is what we use, and it is
+also what most WebViews can render (the `/original` endpoint returns the raw
+file, which for HEIC iPhone photos most WebViews cannot display).
 
-## File map
+## Troubleshooting
 
-| File | Where it goes |
-|---|---|
-| `shell_scripts/jax_stream_refresh.sh` | `/config/shell_scripts/jax_stream_refresh.sh` |
-| `shell_commands/jax_stream_refresh.yaml` | merged into `shell_command:` (via split-config include, or pasted into `configuration.yaml`) |
-| `blueprints/automation/jax_stream.yaml` | `/config/blueprints/automation/jax_stream/jax_stream.yaml` (note the namespacing subdir) |
-| `view_assist/views/jax-stream/jax-stream.yaml` | `/config/view_assist/views/jax-stream/jax-stream.yaml`; register once: `view_assist.load_asset name: jax-stream, download_from_repo: false` |
-| `shell_scripts/jax_stream_swipe.sh` | `/config/shell_scripts/jax_stream_swipe.sh` (swipe only) |
-| `shell_commands/jax_stream_swipe.yaml` | merged into `shell_command:` like the refresh one (swipe only) |
-| `www/jax_stream.js` | `/config/www/jax_stream.js`, served at `/local/jax_stream.js`; register via `frontend.extra_module_url` (swipe only) |
+- **View shows VA default gradient:** two common causes: (1) the device home
+  screen is not set to `/view-assist/jax-stream` (VA Dashboard Options ->
+  Home screen); (2) Background mode is not set to `local_random` with the
+  correct Rotate background path in VA Dashboard Options -- without `local_random`,
+  VA ignores the integration's image entity and shows its built-in gradient.
+- **All devices show the same photo:** each stream is a separate integration
+  entry with its own album. Add a second integration entry for the second
+  device's album.
+- **Photo not advancing:** check the Jax Stream device card in Settings ->
+  Devices & Services -> Jax Stream. The `switch` entity may be paused;
+  flip it to resume.
 
 ## Attribution
 

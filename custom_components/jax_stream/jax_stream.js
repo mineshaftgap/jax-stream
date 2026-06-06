@@ -903,17 +903,30 @@
         svg: REMOVE_SVG,
         onTap: function() {
           if (!stream) return;
-          showConfirm(function() {
-            var hass = getHass();
-            if (!hass) return;
-            var dismiss = showStatus("Removing", "#ff5555");
-            var delay = typeof CFG.refreshDelayMs === "number" ? CFG.refreshDelayMs : 3000;
-            Promise.resolve(
-              hass.callService("jax_stream", "remove", { stream: stream })
-            ).then(function() {
-              setTimeout(function() { reloadStream(stream); setTimeout(dismiss, 800); }, delay);
-            }).catch(function(err) { dismiss(); console.error("[jax-stream] remove_confirm failed:", err); });
-          }, null);
+          var s = stream;
+          // Snapshot the asset id from current.txt at tap time so a background
+          // auto-advance during the confirm dialog window removes the intended
+          // photo, not the one that advanced into view after the user decided to remove.
+          fetch('/view_assist/images/jax-stream/' + s + '/current.txt?v=' + Date.now())
+            .then(function(r) { return r.ok ? r.text() : ''; })
+            .then(function(t) { return (t || '').trim(); })
+            .catch(function() { return ''; })
+            .then(function(capturedAssetId) {
+              showConfirm(function() {
+                var hass = getHass();
+                if (!hass) return;
+                var dismiss = showStatus("Removing", "#ff5555");
+                var delay = typeof CFG.refreshDelayMs === "number" ? CFG.refreshDelayMs : 3000;
+                var svcArgs = { stream: s };
+                if (capturedAssetId) svcArgs.asset_id = capturedAssetId;
+                window.__jaxLastRemove = { stream: s, asset_id: capturedAssetId, t: Date.now() };
+                Promise.resolve(
+                  hass.callService("jax_stream", "remove", svcArgs)
+                ).then(function() {
+                  setTimeout(function() { reloadStream(s); setTimeout(dismiss, 800); }, delay);
+                }).catch(function(err) { dismiss(); console.error("[jax-stream] remove_confirm failed:", err); });
+              }, null);
+            });
         }
       },
       {
@@ -1141,6 +1154,7 @@
     delete window.__jaxResetPauseState;
     delete window.__jaxLastSwipe;
     delete window.__jaxLastRating;
+    delete window.__jaxLastRemove;
     delete window.__jaxLastReload;
     delete window.__jaxLastMenu;
     delete window.__jaxPausePhotoWatch;
