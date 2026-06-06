@@ -1,0 +1,47 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Jax Stream",
+        "data": {
+          "name": "Stream name",
+          "url": "Immich URL",
+          "api_key": "API key",
+          "album_id": "Album ID",
+          "interval": "Refresh interval (seconds)",
+          "landscape_only": "Landscape only",
+          "allow_insecure": "Allow insecure HTTPS"
+        },
+        "data_description": {
+          "allow_insecure": "Disable HTTPS certificate verification for a self-signed Immich. Leave off unless you understand the risk."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to Immich. Check the URL and that the server is reachable.",
+      "invalid_auth": "Immich rejected the API key or album. Check the API key and album ID.",
+      "unknown": "Unexpected error. See the Home Assistant log."
+    },
+    "abort": {
+      "already_configured": "This Immich album is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Jax Stream options",
+        "data": {
+          "name": "Stream name",
+          "album_id": "Album ID",
+          "remove_to_album_id": "Recovery album ID (optional)",
+          "interval": "Refresh interval (seconds)",
+          "landscape_only": "Landscape only",
+          "allow_insecure": "Allow insecure HTTPS"
+        },
+        "data_description": {
+          "remove_to_album_id": "Assets removed from the source album are added here first as a fail-safe before deletion. Requires albumAsset.create/delete and album.read scopes on the API key; asset.update is needed for ratings."
+        }
+      }
+    }
+  }
+}

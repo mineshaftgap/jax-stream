@@ -1,0 +1,13 @@
+{
+  "domain": "jax_stream",
+  "name": "Jax Stream",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/mineshaftgap/jax-stream",
+  "issue_tracker": "https://github.com/mineshaftgap/jax-stream/issues",
+  "homeassistant": "2024.7.0",
+  "iot_class": "local_polling",
+  "requirements": ["Pillow==12.2.0"],
+  "dependencies": ["frontend", "view_assist"],
+  "codeowners": ["@mineshaftgap"]
+}

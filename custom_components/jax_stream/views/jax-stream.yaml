@@ -24,10 +24,11 @@ extra_styles: |
       background-size: cover;
       background-position: center;
       background-repeat: no-repeat;
-      filter: blur(30px);
+      filter: blur(var(--jax-blur, 30px));
       transform: scale(1.1);
       z-index: -2;
       pointer-events: none;
+      display: var(--jax-blur-fill, block);
     }
     ha-card::after {
       content: "";
@@ -49,7 +50,7 @@ styles:
         "title status"
         "clock clock"
         "assist assist"
-    - grid-template-rows: min-content min-content min-content min-content
+    - grid-template-rows: min-content min-content min-content
     - grid-template-columns: 1fr 1fr
   custom_fields:
     clock:
@@ -58,7 +59,7 @@ styles:
       - font-size: 12vh
       - width: max-content
       - position: absolute
-      - top: 65%
+      - top: var(--jax-clock-top, 65%)
 custom_fields:
   title: ""
   clock:
@@ -67,11 +68,14 @@ custom_fields:
       cards:
         - type: custom:button-card
           name: "[[[ return variables.var_current_time ]]]"
+          card_mod:
+            style: |
+              #name {
+                color: rgba(255, 255, 255, var(--jax-text-opacity, 0.7)) !important;
+              }
           styles:
             name:
               - font-size: 30vh
-              - color: rgba(255, 255, 255, 0.7)
-              - text-shadow: 2px 2px black
             card:
               - background-color: transparent
               - border-width: 0px
@@ -93,8 +97,7 @@ custom_fields:
               - grid-template-rows: min-content min-content
             name:
               - font-size: 8vh
-              - color: rgba(255, 255, 255, 0.7)
-              - text-shadow: 2px 2px black
+              - color: rgba(255, 255, 255, var(--jax-text-opacity, 0.7))
             icon:
               - width: 10vw
               - opacity: 0.7

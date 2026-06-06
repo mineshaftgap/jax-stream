@@ -1,0 +1,104 @@
+type: custom:button-card
+template:
+  - variable_template
+  - body_template
+variables:
+  clockaltcardversion: 1.0.0
+  var_background: >-
+    [[[ try {return
+    hass.states[variables.var_assistsat_entity].attributes.background} catch {
+    return  ""}]]]
+extra_styles: |
+  [[[ return `
+    ha-card {
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+      background-color: black;
+    }
+    ha-card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: url("${variables.var_background}");
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      filter: blur(var(--jax-blur, 30px));
+      transform: scale(1.1);
+      z-index: -2;
+      pointer-events: none;
+      display: var(--jax-blur-fill, block);
+    }
+    ha-card::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: url("${variables.var_background}");
+      background-size: contain;
+      background-position: center;
+      background-repeat: no-repeat;
+      z-index: -1;
+      pointer-events: none;
+    }
+  ` ]]]
+styles:
+  card:
+    - background: transparent
+  grid:
+    - grid-template-areas: |
+        "title status"
+        "clock clock"
+        "assist assist"
+    - grid-template-rows: min-content min-content min-content
+    - grid-template-columns: 1fr 1fr
+  custom_fields:
+    clock:
+      - justify-self: start
+      - align-self: center
+      - font-size: 12vh
+      - width: max-content
+      - position: absolute
+      - top: var(--jax-clock-top, 65%)
+custom_fields:
+  title: ""
+  clock:
+    card:
+      type: horizontal-stack
+      cards:
+        - type: custom:button-card
+          name: "[[[ return variables.var_current_time ]]]"
+          card_mod:
+            style: |
+              #name {
+                color: rgba(255, 255, 255, var(--jax-text-opacity, 0.7)) !important;
+              }
+          styles:
+            name:
+              - font-size: 30vh
+            card:
+              - background-color: transparent
+              - border-width: 0px
+        - type: custom:button-card
+          icon: "[[[ return variables.var_weather_icon ]]]"
+          name: "[[[ return variables.var_weather_temperature ]]]"
+          tap_action:
+            action: navigate
+            navigation_path: weather
+          styles:
+            card:
+              - background-color: transparent
+              - border-width: 0px
+              - width: 50%
+              - position: relative
+              - bottom: "-40%"
+            grid:
+              - grid-template-areas: "\"i n\""
+              - grid-template-rows: min-content min-content
+            name:
+              - font-size: 8vh
+              - color: rgba(255, 255, 255, var(--jax-text-opacity, 0.7))
+            icon:
+              - width: 10vw
+              - opacity: 0.7
+              - filter: drop-shadow(2px 2px black)
