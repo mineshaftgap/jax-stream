@@ -1,0 +1,125 @@
+refresh:
+  name: Refresh
+  description: Force an immediate photo refresh on a stream.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream to refresh.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:
+
+next:
+  name: Next
+  description: Advance to the next photo in a stream.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:
+
+remove:
+  name: Remove
+  description: Remove the current (or specified) photo from its Immich album.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:
+    asset_id:
+      name: Asset ID
+      description: Immich asset ID to remove. Defaults to the currently displayed photo.
+      selector:
+        text:
+
+set_rating:
+  name: Set rating
+  description: Set the Immich star rating on the current photo.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:
+    rating:
+      name: Rating
+      description: Star rating from 0 (unrated) to 5.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 5
+          mode: slider
+
+touch:
+  name: Touch
+  description: Update the Immich "last viewed" timestamp on the current photo.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:
+
+pause:
+  name: Pause
+  description: Pause automatic photo rotation on a stream.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:
+
+resume:
+  name: Resume
+  description: Resume automatic photo rotation on a paused stream.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:

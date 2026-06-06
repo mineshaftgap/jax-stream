@@ -5,9 +5,8 @@
   "config_flow": true,
   "documentation": "https://github.com/mineshaftgap/jax-stream",
   "issue_tracker": "https://github.com/mineshaftgap/jax-stream/issues",
-  "homeassistant": "2024.7.0",
   "iot_class": "local_polling",
   "requirements": ["Pillow==12.2.0"],
-  "dependencies": ["frontend", "view_assist"],
+  "dependencies": ["frontend", "http", "view_assist"],
   "codeowners": ["@mineshaftgap"]
 }
