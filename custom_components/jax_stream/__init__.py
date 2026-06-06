@@ -67,6 +67,8 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.IMAGE, Platform.BUTTON, Platform.SELECT, Platform.SWITCH]
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 # Bundled view YAML shipped as package data (D-04/D-06).
 # Path(__file__).parent resolves to custom_components/jax_stream/.
 _SOURCE_VIEW = Path(__file__).parent / "views" / "jax-stream.yaml"
