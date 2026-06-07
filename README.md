@@ -34,8 +34,8 @@ Jax Stream is the "no extra container" middle ground: VA-native, per-device, no 
 
 - Rotating Immich photo background per VA device, default 1-minute interval (configurable per stream)
 - Native HA `image` entity plus `button`, `switch`, and `select` control entities per stream
-- `jax_stream` services: refresh, next, remove, set_rating, pause, resume -- callable from automations, scripts, the mobile app, and voice assistants
-- On-screen actions: swipe left to advance, swipe right for up-to-10 blob history back-nav (photos slide to follow the finger); jaxmenu: remove from album, star rating (1-5 + Unrate), pause toggle
+- `jax_stream` services: refresh, next, remove, set_rating, rotate, pause, resume -- callable from automations, scripts, the mobile app, and voice assistants
+- On-screen actions: swipe left to advance, swipe right for up-to-10 blob history back-nav (photos slide to follow the finger); jaxmenu: remove from album, star rating (1-5 + Unrate), rotate CW/CCW, pause toggle
 - Dedicated auto-registered jax-stream VA view (blurred-fill letterbox, 70% text opacity)
 - Per-device per-stream targeting -- different albums on different displays
 - Integration-served frontend module -- no manual `frontend:` config needed
@@ -99,6 +99,7 @@ mobile app, and voice assistants:
 | `jax_stream.next` | Advance to the next queued photo |
 | `jax_stream.remove` | Remove current photo from source album (recovery-first if configured) |
 | `jax_stream.set_rating` | Set Immich star rating 1-5 (0 = unrate) |
+| `jax_stream.rotate` | Rotate current photo CW or CCW via Immich non-destructive edit and show the corrected rendition in place (`angle`: 90 = CW, 270 = CCW, 180 = flip) |
 | `jax_stream.pause` | Pause auto-advance |
 | `jax_stream.resume` | Resume (clears both manual pause and touch-window) |
 
@@ -123,9 +124,16 @@ photo stays put.
 The jaxmenu Rate item opens a star-rating overlay (1-5 + Unrate). Tap to rate;
 the rating is sent to Immich via `jax_stream.set_rating`.
 
+The jaxmenu Rotate CCW and Rotate CW items fix a sideways photo via Immich's
+non-destructive edit API. The corrected rendition is shown in place without
+advancing to the next photo. The rotation sticks for all future appearances of
+that photo. Requires the `asset.edit.create` Immich key scope.
+
 The jaxmenu first item is a Pause toggle. While manually paused, a play-triangle
 indicator appears near the jaxicon; tap it to resume. Any screen touch also arms
-a silent 90-second suppression window before auto-advance resumes.
+a silent 90-second suppression window before auto-advance resumes. A radial
+ring badge near the jaxicon shows the remaining suppression window, decaying in
+real time; tap it to resume immediately.
 
 ## The jax-stream view
 
@@ -173,11 +181,13 @@ Verified against `server/src/enum.ts` and the asset-media/search controllers:
 | `PUT /api/assets/{id}` | `asset.update` | jaxmenu star rating |
 | `DELETE /api/albums/{id}/assets` | `albumAsset.delete` | jaxmenu remove only |
 | `PUT /api/albums/{id}/assets` | `albumAsset.create` | only when a Remove-to (recovery) album is set |
+| `PUT /api/assets/{id}/original` (edit) | `asset.edit.create` | jaxmenu rotate CW/CCW |
 
 Basic slideshow: **`asset.read` + `asset.view`**. Add **`asset.update`** to
 use the jaxmenu star-rating overlay. Add **`albumAsset.delete`** for the
 jaxmenu remove-from-album action, and **`albumAsset.create`** as well if you
-set a Remove-to recovery album so removed photos are re-filed there.
+set a Remove-to recovery album so removed photos are re-filed there. Add
+**`asset.edit.create`** to use the jaxmenu rotate CW/CCW items.
 `asset.download` is not needed -- thumbnail/preview is what we use, and it is
 also what most WebViews can render (the `/original` endpoint returns the raw
 file, which for HEIC iPhone photos most WebViews cannot display).
