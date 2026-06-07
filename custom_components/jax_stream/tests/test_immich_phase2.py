@@ -139,6 +139,85 @@ class TestListAlbums(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, albums)
 
 
+class TestGetAssetInfo(unittest.IsolatedAsyncioTestCase):
+    """get_asset_info returns rating (from exifInfo) AND isEdited (top-level)."""
+
+    async def test_returns_rating_and_isedited(self):
+        resp = _mock_resp(json_data={"exifInfo": {"rating": 2}, "isEdited": True})
+        session = _session_with("get", resp)
+        client = _make_client(session)
+        result = await client.get_asset_info("abc")
+        self.assertEqual(result, {"rating": 2, "isEdited": True})
+
+    async def test_defaults_when_fields_absent(self):
+        resp = _mock_resp(json_data={})
+        session = _session_with("get", resp)
+        client = _make_client(session)
+        result = await client.get_asset_info("abc")
+        self.assertEqual(result, {"rating": 0, "isEdited": False})
+
+
+class TestRotate(unittest.IsolatedAsyncioTestCase):
+    """rotate issues PUT /api/assets/{id}/edits with an absolute rotate action."""
+
+    async def test_put_url_and_body(self):
+        resp = _mock_resp(json_data={"assetId": "abc"})
+        session = _session_with("put", resp)
+        client = _make_client(session)
+        await client.rotate("abc", 90)
+        call_kwargs = session.put.call_args
+        self.assertTrue(
+            call_kwargs[0][0].endswith("/api/assets/abc/edits"),
+            f"URL did not end with /api/assets/abc/edits: {call_kwargs[0][0]}",
+        )
+        self.assertEqual(
+            call_kwargs[1]["json"],
+            {"edits": [{"action": "rotate", "parameters": {"angle": 90}}]},
+        )
+
+
+class TestDownloadThumbnailEdited(unittest.IsolatedAsyncioTestCase):
+    """download_thumbnail(edited=True) appends &edited=true; falls back on error."""
+
+    async def test_edited_true_appends_query(self):
+        resp = _mock_resp(json_data=None)
+        resp.read = AsyncMock(return_value=b"edited-bytes")
+        session = _session_with("get", resp)
+        client = _make_client(session)
+        out = await client.download_thumbnail("abc", edited=True)
+        self.assertEqual(out, b"edited-bytes")
+        url = session.get.call_args[0][0]
+        self.assertIn("size=preview", url)
+        self.assertIn("edited=true", url)
+
+    async def test_plain_has_no_edited_query(self):
+        resp = _mock_resp(json_data=None)
+        resp.read = AsyncMock(return_value=b"plain-bytes")
+        session = _session_with("get", resp)
+        client = _make_client(session)
+        out = await client.download_thumbnail("abc")
+        self.assertEqual(out, b"plain-bytes")
+        self.assertNotIn("edited=true", session.get.call_args[0][0])
+
+    async def test_edited_404_falls_back_to_original(self):
+        # First (edited) call 404s -> ImmichConnError; second (plain) call succeeds.
+        edited_resp = _mock_resp(status=404, ok=False)
+        plain_resp = _mock_resp()
+        plain_resp.read = AsyncMock(return_value=b"original-bytes")
+        cm_edited = MagicMock()
+        cm_edited.__aenter__ = AsyncMock(return_value=edited_resp)
+        cm_edited.__aexit__ = AsyncMock(return_value=False)
+        cm_plain = MagicMock()
+        cm_plain.__aenter__ = AsyncMock(return_value=plain_resp)
+        cm_plain.__aexit__ = AsyncMock(return_value=False)
+        session = MagicMock()
+        session.get.side_effect = [cm_edited, cm_plain]
+        client = _make_client(session)
+        out = await client.download_thumbnail("abc", edited=True)
+        self.assertEqual(out, b"original-bytes")
+        self.assertEqual(session.get.call_count, 2)
+
+
 class TestErrorHandling(unittest.IsolatedAsyncioTestCase):
     """403 raises ImmichAuthError; 500 raises ImmichConnError."""
 

@@ -48,8 +48,10 @@ from .const import (
     SERVICE_REFRESH,
     SERVICE_REMOVE,
     SERVICE_RESUME,
+    SERVICE_ROTATE,
     SERVICE_SET_RATING,
     SERVICE_TOUCH,
+    ROTATE_ALLOWED_DELTAS,
     VA_DOMAIN,
     VIEW_ASSET_CLASS,
     VIEW_NAME,
@@ -97,6 +99,7 @@ SCHEMA_SET_RATING = vol.Schema(
         vol.Optional("entity_id"): cv.entity_id,
         vol.Optional("stream"): cv.string,
         vol.Required("rating"): vol.All(vol.Coerce(int), vol.Range(min=0, max=5)),
+        vol.Optional("asset_id"): cv.string,
     }
 )
 
@@ -104,6 +107,16 @@ SCHEMA_REMOVE = vol.Schema(
     {
         vol.Optional("entity_id"): cv.entity_id,
         vol.Optional("stream"): cv.string,
+        vol.Optional("asset_id"): cv.string,
+    }
+)
+
+SCHEMA_ROTATE = vol.Schema(
+    {
+        vol.Optional("entity_id"): cv.entity_id,
+        vol.Optional("stream"): cv.string,
+        # delta CW degrees: 90 = CW, 270 = CCW, 180 = flip
+        vol.Required("angle"): vol.All(vol.Coerce(int), vol.In(ROTATE_ALLOWED_DELTAS)),
         vol.Optional("asset_id"): cv.string,
     }
 )
@@ -120,7 +133,7 @@ def _compute_js_hash(path: str) -> str:
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Register the seven jax_stream services once per domain.
+    """Register the jax_stream services once per domain.
 
     Called by HA before any config entries are loaded (standard two-step).
     Service handlers use a dual-path resolver: entity_id (via entity registry)
@@ -159,7 +172,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     async def handle_refresh(call: ServiceCall) -> None:
         coord = await _resolve_coordinator(call)
-        coord._force_refresh = True
+        coord._force_refresh = True  # bypass gate so a manual refresh always fires
         await coord.async_request_refresh()
 
     async def handle_next(call: ServiceCall) -> None:
@@ -174,7 +187,14 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     async def handle_set_rating(call: ServiceCall) -> None:
         coord = await _resolve_coordinator(call)
         rating = call.data["rating"]
-        await coord.async_set_rating(rating)
+        asset_id = call.data.get("asset_id") or None
+        await coord.async_set_rating(rating, asset_id)
+
+    async def handle_rotate(call: ServiceCall) -> None:
+        coord = await _resolve_coordinator(call)
+        angle = call.data["angle"]
+        asset_id = call.data.get("asset_id") or None
+        await coord.async_rotate(angle, asset_id)
 
     async def handle_touch(call: ServiceCall) -> None:
         coord = await _resolve_coordinator(call)
@@ -192,6 +212,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_NEXT, handle_next, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_REMOVE, handle_remove, schema=SCHEMA_REMOVE)
     hass.services.async_register(DOMAIN, SERVICE_SET_RATING, handle_set_rating, schema=SCHEMA_SET_RATING)
+    hass.services.async_register(DOMAIN, SERVICE_ROTATE, handle_rotate, schema=SCHEMA_ROTATE)
     hass.services.async_register(DOMAIN, SERVICE_TOUCH, handle_touch, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_PAUSE, handle_pause, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_RESUME, handle_resume, schema=SCHEMA_STREAM_TARGET)
@@ -211,6 +232,21 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     ])
 
     add_extra_js_url(hass, f"{JS_ROUTE_PATH}?v={content_hash}")
+
+    # Prefetch ring buffer: serve <config>/jax_stream/ at /jax_stream_data/ so
+    # tests can fetch slot files for content-equality proofs (DoD: assert new
+    # random.jpg hash equals a pre-recorded slot hash). No sensitive data lives here.
+    jax_data_path = hass.config.path("jax_stream")
+    await hass.async_add_executor_job(
+        lambda: __import__("os").makedirs(jax_data_path, exist_ok=True)
+    )
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(
+            url_path="/jax_stream_data",
+            path=jax_data_path,
+            cache_headers=False,  # slot files change; no caching
+        )
+    ])
 
     return True
 
@@ -296,6 +332,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
     # Service handlers resolve coordinator by stream=stream_subdir via this dict.
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][settings.stream_subdir] = coordinator
+
+    # Cancel any in-flight backfill task on entry unload so it doesn't outlive
+    # the coordinator (Phase 1 prefetch-window-restore).
+    def _cancel_backfill() -> None:
+        task = coordinator._backfill_task
+        if task and not task.done():
+            task.cancel()
+    entry.async_on_unload(_cancel_backfill)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

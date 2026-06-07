@@ -106,6 +106,15 @@ _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 if _PKG_ROOT not in sys.path:
     sys.path.insert(0, _PKG_ROOT)
 
+# Pre-inject a bare jax_stream package (with __path__) so importing
+# jax_stream.coordinator resolves the submodule WITHOUT executing the real
+# __init__.py -- which pulls homeassistant.components.frontend/http + voluptuous
+# that are absent in the plain-python3 test env (DEVEL/testing.md). Relative
+# imports inside coordinator.py (from .const / .immich) resolve from __path__.
+_jax_pkg = types.ModuleType("jax_stream")
+_jax_pkg.__path__ = [os.path.join(_PKG_ROOT, "jax_stream")]
+sys.modules["jax_stream"] = _jax_pkg
+
 from jax_stream.coordinator import JaxStreamCoordinator  # noqa: E402
 from jax_stream.immich import ImmichError               # noqa: E402
 
@@ -142,10 +151,21 @@ def _make_stub(
     stub._force_refresh = force
     stub.current_asset_id = current_asset_id
     stub._current_rating = 0
+    stub._rotate_angles = {}
     stub._bridge_dir = "/tmp/jax_test_bridge"
     stub.disk_path = "/tmp/jax_test_bridge/random.jpg"
     stub.image_bytes = image_bytes
     stub.image_last_updated = None
+
+    # Ring buffer state (Phase 1 prefetch). _future_count=0 -> degraded path,
+    # which calls _fetch_next_slot (mocked below). The ring fields are needed
+    # by _async_update_data and async_next.
+    stub._head = 0
+    stub._ring_size = 4
+    stub._future_count = 0
+    stub._slot_uuids = [None] * 4
+    stub._slot_ratings = [0] * 4
+    stub._state_json_path = "/tmp/jax_test_state.json"
 
     # Mock hass: async_add_executor_job returns awaitable via AsyncMock side_effect
     hass = MagicMock()
@@ -157,7 +177,9 @@ def _make_stub(
     client.random_landscape = AsyncMock(return_value="asset-xyz")
     client.download_thumbnail = AsyncMock(return_value=b"raw-bytes")
     client.get_asset_rating = AsyncMock(return_value=3)
+    client.get_asset_info = AsyncMock(return_value={"rating": 3, "isEdited": False})
     client.set_rating = AsyncMock(return_value=None)
+    client.rotate = AsyncMock(return_value=None)
     client.add_to_album = AsyncMock(return_value=None)
     client.remove_from_album = AsyncMock(return_value=None)
     stub.client = client
@@ -175,6 +197,13 @@ def _make_stub(
     # Bridge write helpers: mock so action-method tests focus on gate state
     stub._write_pause_bridge = AsyncMock(return_value=None)
     stub._write_touch_bridge = AsyncMock(return_value=None)
+
+    # Ring buffer method stubs: _fetch_next_slot is the new advance entry point
+    # (replaces direct client.random_landscape calls in _async_update_data).
+    # Returns (jpeg_bytes, asset_id, rating) as the real implementation does.
+    stub._fetch_next_slot = AsyncMock(return_value=(b"fake-jpeg", "asset-xyz", 3))
+    stub._write_content_bridges = AsyncMock(return_value=None)
+    stub._kick_backfill = MagicMock()
 
     return stub
 
@@ -205,17 +234,17 @@ class TestGateSuppression(unittest.IsolatedAsyncioTestCase):
         stub.client.random_landscape.assert_not_called()
 
     async def test_no_gate_advance_proceeds(self):
-        """Neither paused nor in-window -> advance calls random_landscape."""
+        """Neither paused nor in-window -> advance calls _fetch_next_slot."""
         stub = _make_stub(image_bytes=b"old-photo")
         result = await JaxStreamCoordinator._async_update_data(stub)
-        stub.client.random_landscape.assert_called_once()
+        stub._fetch_next_slot.assert_called_once()
         self.assertEqual(result, b"fake-jpeg")
 
     async def test_force_refresh_bypasses_manual_pause(self):
         """_force_refresh=True -> advance even when manual-paused."""
         stub = _make_stub(image_bytes=b"old-photo", manual_paused=True, force=True)
         result = await JaxStreamCoordinator._async_update_data(stub)
-        stub.client.random_landscape.assert_called_once()
+        stub._fetch_next_slot.assert_called_once()
         self.assertEqual(result, b"fake-jpeg")
 
     async def test_force_refresh_consumed_once(self):
@@ -229,9 +258,9 @@ class TestGateSuppression(unittest.IsolatedAsyncioTestCase):
         # First advance updated image_bytes to the new photo
         self.assertEqual(stub.image_bytes, b"fake-jpeg")
         # Second tick with manual still paused: gate re-engages, no advance
-        stub.client.random_landscape.reset_mock()
+        stub._fetch_next_slot.reset_mock()
         result2 = await JaxStreamCoordinator._async_update_data(stub)
-        stub.client.random_landscape.assert_not_called()
+        stub._fetch_next_slot.assert_not_called()
         # Gate returns the current image_bytes (the photo fetched in the first tick)
         self.assertEqual(result2, b"fake-jpeg")
 
@@ -260,15 +289,21 @@ class TestActionMethods(unittest.IsolatedAsyncioTestCase):
         stub.async_update_listeners.assert_called_once()
 
     async def test_async_next_lifts_manual_and_rearms_window(self):
-        """async_next clears manual hold, re-arms 90s window, sets _force_refresh."""
+        """async_next clears manual hold, re-arms 90s window, and inline-promotes.
+        _force_refresh is NOT set (Phase 1: promote is inline, no request_refresh).
+        async_update_listeners() is called after the promote."""
         stub = _make_stub(manual_paused=True)
         before = time.time()
         await JaxStreamCoordinator.async_next(stub)
         self.assertFalse(stub._manual_paused)
         self.assertGreater(stub._touch_deadline, before)
-        # _force_refresh is set True before async_request_refresh (which is mocked)
-        self.assertTrue(stub._force_refresh)
+        # Phase 1: inline promote does NOT use _force_refresh
+        self.assertFalse(stub._force_refresh)
+        stub._fetch_next_slot.assert_called_once()
         stub.async_update_listeners.assert_called_once()
+        # Backfill kicked, async_request_refresh NOT called
+        stub._kick_backfill.assert_called_once()
+        stub.async_request_refresh.assert_not_called()
 
     async def test_async_touch_arms_window_only(self):
         """async_touch arms the 90s window but does NOT lift manual hold."""
@@ -322,6 +357,63 @@ class TestRecoveryFailSafe(unittest.IsolatedAsyncioTestCase):
         await JaxStreamCoordinator.async_remove(stub)
         self.assertTrue(stub._force_refresh)
         stub.async_request_refresh.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests: async_rotate (Immich non-destructive edit + in-place corrected re-show)
+# ---------------------------------------------------------------------------
+
+
+class TestRotate(unittest.IsolatedAsyncioTestCase):
+    """async_rotate: cumulative absolute angle, edited-rendition poll, no advance."""
+
+    async def test_no_current_asset_rotate_raises(self):
+        """async_rotate with no current asset raises ServiceValidationError."""
+        stub = _make_stub(current_asset_id=None)
+        with self.assertRaises(ServiceValidationError):
+            await JaxStreamCoordinator.async_rotate(stub, 90)
+
+    async def test_rotate_cw_puts_absolute_angle_and_accumulates(self):
+        """First CW (90) PUTs 90; second CW PUTs 180 (cumulative, mod 360)."""
+        stub = _make_stub(current_asset_id="asset-rot")
+        # before-snapshot returns old edited bytes; each poll returns NEW bytes.
+        stub.client.download_thumbnail = AsyncMock(
+            side_effect=[b"old-edit", b"new-edit-1", b"old-edit", b"new-edit-2"]
+        )
+        await JaxStreamCoordinator.async_rotate(stub, 90)
+        self.assertEqual(stub.client.rotate.call_args[0], ("asset-rot", 90))
+        self.assertEqual(stub._rotate_angles["asset-rot"], 90)
+        await JaxStreamCoordinator.async_rotate(stub, 90)
+        self.assertEqual(stub.client.rotate.call_args[0], ("asset-rot", 180))
+        self.assertEqual(stub._rotate_angles["asset-rot"], 180)
+
+    async def test_rotate_ccw_wraps_modulo_360(self):
+        """CCW (delta 270) from 0 yields absolute 270; from 270 yields 180."""
+        stub = _make_stub(current_asset_id="asset-rot")
+        stub._rotate_angles = {"asset-rot": 270}
+        stub.client.download_thumbnail = AsyncMock(side_effect=[b"old", b"new"])
+        await JaxStreamCoordinator.async_rotate(stub, 270)  # 270 + 270 = 540 % 360 = 180
+        self.assertEqual(stub.client.rotate.call_args[0], ("asset-rot", 180))
+
+    async def test_rotate_updates_image_in_place_without_advancing(self):
+        """Successful rotate updates image_bytes/last_updated and notifies
+        listeners, but does NOT set _force_refresh or call async_request_refresh
+        (the corrected photo stays in place; no advance to a new image)."""
+        stub = _make_stub(current_asset_id="asset-rot", image_bytes=b"sideways")
+        stub.client.download_thumbnail = AsyncMock(side_effect=[b"old-edit", b"new-edit"])
+        await JaxStreamCoordinator.async_rotate(stub, 90)
+        self.assertEqual(stub.image_bytes, b"fake-jpeg")   # re-encoded via _transpose_jpeg
+        self.assertIsNotNone(stub.image_last_updated)
+        stub.async_update_listeners.assert_called_once()
+        self.assertFalse(stub._force_refresh)
+        stub.async_request_refresh.assert_not_called()
+
+    async def test_rotate_uses_caller_asset_id_over_current(self):
+        """asset_id arg overrides current_asset_id (drift-prevention)."""
+        stub = _make_stub(current_asset_id="auto-advanced")
+        stub.client.download_thumbnail = AsyncMock(side_effect=[b"old", b"new"])
+        await JaxStreamCoordinator.async_rotate(stub, 90, asset_id="tap-time-id")
+        self.assertEqual(stub.client.rotate.call_args[0][0], "tap-time-id")
 
 
 if __name__ == "__main__":

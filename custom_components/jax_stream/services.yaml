@@ -75,6 +75,45 @@ set_rating:
           min: 0
           max: 5
           mode: slider
+    asset_id:
+      name: Asset ID
+      description: Immich asset UUID of the photo to rate. When omitted the coordinator rates its current_asset_id. Supply this from the JS display-time cache to prevent drift.
+      selector:
+        text:
+
+rotate:
+  name: Rotate
+  description: Rotate the current photo via Immich non-destructive edit and show the corrected orientation in place (does not advance). Requires the asset.edit.create API-key scope.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:
+    angle:
+      name: Angle
+      description: Rotation to apply, clockwise degrees. 90 = clockwise, 270 = counter-clockwise, 180 = flip. Accumulates per photo.
+      required: true
+      selector:
+        select:
+          options:
+            - label: Clockwise 90
+              value: "90"
+            - label: Flip 180
+              value: "180"
+            - label: Counter-clockwise 90
+              value: "270"
+    asset_id:
+      name: Asset ID
+      description: Immich asset UUID of the photo to rotate. When omitted the coordinator rotates its current_asset_id. Supply this from the JS display-time cache to prevent drift.
+      selector:
+        text:
 
 touch:
   name: Touch

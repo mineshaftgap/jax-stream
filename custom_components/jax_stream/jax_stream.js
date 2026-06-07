@@ -2,8 +2,10 @@
  * jax_stream.js -- Jax Stream browser module (swipe, menus, overlays)
  *
  * Loaded once via Home Assistant's frontend.extra_module_url (see README).
- * Horizontal swipe: right = advance to next photo; left = go to previous photo
- *   (in-memory history stack, up to 10 entries). Remove-from-album is menu-only (jaxmenu -> remove).
+ * Horizontal swipe (carousel convention, photo follows the finger): left =
+ * advance to next photo (slides in from the right); right = go to previous photo
+ *   (slides in from the left; in-memory history stack, up to 10 entries).
+ *   Remove-from-album is menu-only (jaxmenu -> remove).
  *
  * Uses plain touch events, with no browser_mod dependency.
  *
@@ -28,7 +30,7 @@
       axisRatio: 1.0,     // |dx| must exceed |dy| * axisRatio (allow diagonal)
       maxDuration: 2000,  // ms; real "look then swipe" gestures are slow
       cooldownMs: 1000,   // ignore further swipes until the advance settles
-      refreshDelayMs: 500,  // ms to wait after callService before reloading the image
+      refreshDelayMs: 100,  // ms to wait after callService before reloading the image (prefetched frame is already on disk)
       showHint: true,     // transparent swipe affordance on touch
       showToast: true,    // brief on-screen confirmation
     },
@@ -75,7 +77,11 @@
   var histNavSuppress = false; // true for ONE checkPhotoChange cycle after nav injection
   var liveBlobUrl  = null;     // blob: URL of the photo currently live on screen
   var liveBlobSrc  = null;     // the computed bg string liveBlobUrl was captured from
+  var displayedAssetId = null; // Immich asset_id parsed from the live JPEG bytes
   var bgRoot       = null;     // cached shadow root hosting ha-card (showBg target)
+  var nullSrcStreak = 0;      // consecutive checkPhotoChange ticks returning null src
+  var pendingSlideDir = 0;    // swipe-set slide direction handed from fireSwipe to reloadStream
+  var _serverHistoryLoaded = false;  // Phase 4: server past-window pre-load completed
 
   // Pause / suppress-auto-advance state. The server (jax_stream_action.sh) is
   // the source of truth via pause_manual.txt / pause_touch.txt; these mirror it
@@ -85,14 +91,35 @@
   var pauseIndicator = null;   // persistent quick-unpause icon (manual pause only)
   var lastPauseAt   = 0;       // ms of the last doPause (indicator mouseup guard)
   var TOUCH_ARM_DEBOUNCE_MS = 30000;  // don't re-arm the 90s window more than this often
+  // Decaying countdown badge for the silent 90s touch hold (TODO touch-pause-indicator).
+  // Distinct from the manual pauseIndicator: shows ONLY while a touch window is
+  // armed and NOT manually paused; the radial ring sweeps over the remaining time.
+  var touchIndicator   = null; // the badge element (z 99988)
+  var touchDeadline    = 0;    // ms epoch when the current touch window ends (0 = none)
+  var touchDismissed   = null; // photo src the badge was dismissed on (sticky per photo)
+  var touchRingTimer   = null; // interval driving the ring + auto-hide on expiry
+  var lastTouchDismissAt = 0;  // ms of last dismiss (ignore the compat-mouseup re-arm)
+  var TOUCH_WINDOW_MS  = 90000;// server TOUCH_WINDOW_SECONDS (const.py) mirrored for the ring
+  var TOUCH_RING_CIRC  = 282.7;// 2*pi*r, r=45 in the viewBox-100 ring
   // Two bars = pause action; triangle = resume action (also the indicator glyph).
   var PAUSE_SVG =
-    '<svg pointer-events="none" width="28" height="28" viewBox="0 0 24 24">' +
+    '<svg pointer-events="none" width="80%" height="80%" viewBox="0 0 24 24">' +
     '<rect x="6" y="5" width="4" height="14" rx="1" fill="#fff"/>' +
     '<rect x="14" y="5" width="4" height="14" rx="1" fill="#fff"/></svg>';
   var RESUME_SVG =
-    '<svg pointer-events="none" width="28" height="28" viewBox="0 0 24 24">' +
+    '<svg pointer-events="none" width="80%" height="80%" viewBox="0 0 24 24">' +
     '<polygon points="7,5 19,12 7,19" fill="#fff"/></svg>';
+  // Radial ring overlay for the touch-hold badge. The faint track is full; the
+  // bright .jax-ring sweeps away as the window decays (offset grows). rotate(-90)
+  // starts the sweep at 12 o'clock. Encodes time with the RING, not opacity, so
+  // the glyph stays readable over bright photos.
+  var TOUCH_RING_SVG =
+    '<svg pointer-events="none" viewBox="0 0 100 100" ' +
+    'style="position:absolute;top:0;left:0;width:100%;height:100%;">' +
+    '<circle cx="50" cy="50" r="45" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="8"/>' +
+    '<circle class="jax-ring" cx="50" cy="50" r="45" fill="none" stroke="#fff" ' +
+    'stroke-width="8" stroke-linecap="round" stroke-dasharray="282.7" ' +
+    'stroke-dashoffset="0" transform="rotate(-90 50 50)"/></svg>';
 
   function getHass() {
     var el = document.querySelector("home-assistant");
@@ -106,6 +133,40 @@
     }
     catch (e) { return false; }
   }
+
+  // True once View Assist's screen_mode=hide_header_sidebar has taken the page
+  // full-screen (kiosk). During a device reset the Lovelace header is briefly
+  // visible BEFORE VA/VACA apply kiosk; gating all jax UI on this keeps the
+  // jaxicon, pause indicator, and swipes from appearing over the half-loaded,
+  // non-kiosk page. Detect by POSITIVE evidence of a visible header -- the
+  // hui-root .header with nonzero height -- and treat that as "not yet kiosk".
+  // If no header is found (HA internals changed) fall back to ready=true so the
+  // feature never silently disappears.
+  function inKiosk() {
+    try {
+      var stack = [document.documentElement];
+      var guard = 0;
+      while (stack.length && guard < 20000) {
+        guard++;
+        var node = stack.pop();
+        if (!node) continue;
+        if (node.nodeType === 1) {
+          if (node.tagName === "HUI-ROOT" && node.shadowRoot) {
+            var h = node.shadowRoot.querySelector(".header");
+            if (h) return h.getBoundingClientRect().height === 0;
+          }
+          if (node.shadowRoot) stack.push(node.shadowRoot);
+        }
+        var kids = node.children;
+        if (kids) for (var j = 0; j < kids.length; j++) stack.push(kids[j]);
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  // All jax UI (jaxicon, pause indicator, swipes) gates on this: on the clock
+  // view AND kiosk applied. See inKiosk() for the reset-window rationale.
+  function jaxReady() { return onClockView() && inKiosk(); }
 
   // SwipeRefreshLayout bypass -- see DEVEL.md for the full explanation.
   function setTouchAction(on) {
@@ -278,7 +339,7 @@
     noBtn.addEventListener("mouseup", function(e) { e.stopPropagation(); handleNo(); }, true);
   }
 
-  function openRatingMenu(stream, currentRating) {
+  function openRatingMenu(stream, currentRating, assetId) {
     if (ratingMenuOverlay) return;
     if (typeof currentRating !== "number" || currentRating < 0 || currentRating > 5) currentRating = 0;
     tracking = false;
@@ -327,7 +388,7 @@
           setTimeout(function() {
             var alreadyGone = !overlay.parentNode;
             cleanup();
-            if (!alreadyGone) fireRating(stream, stars);
+            if (!alreadyGone) fireRating(stream, stars, assetId);
           }, 600);
         }
         btn.addEventListener("touchend", function(e) { e.stopPropagation(); doRate(); }, { capture: true });
@@ -348,7 +409,7 @@
       if (unrateFired) return;
       unrateFired = true;
       cleanup();
-      fireRating(stream, 0);
+      fireRating(stream, 0, assetId);
     }
     unrateBtn.addEventListener("touchend", function(e) { e.stopPropagation(); doUnrate(); }, { capture: true });
     unrateBtn.addEventListener("mouseup", function(e) { e.stopPropagation(); doUnrate(); }, true);
@@ -361,18 +422,17 @@
     document.body.appendChild(overlay);
   }
 
-  function fireRating(stream, stars) {
+  function fireRating(stream, stars, assetId) {
     var hass = getHass();
     if (!hass) return;
     var msg = stars === 0 ? "Unrated" : ("Rated " + stars + (stars === 1 ? " star" : " stars"));
     var color = stars === 0 ? "#aaaaaa" : "#ffcc44";
     showStatus(msg, color);
-    window.__jaxLastRating = { stars: stars, stream: stream, t: Date.now() };
+    window.__jaxLastRating = { stars: stars, stream: stream, asset_id: assetId || null, t: Date.now() };
+    var svcArgs = { stream: stream, rating: stars };
+    if (assetId) svcArgs.asset_id = assetId;
     Promise.resolve(
-      hass.callService("jax_stream", "set_rating", {
-        stream: stream,
-        rating: stars,
-      })
+      hass.callService("jax_stream", "set_rating", svcArgs)
     ).catch(function (err) {
       // eslint-disable-next-line no-console
       console.error("[jax-stream-swipe] rating callService failed:", err);
@@ -384,6 +444,29 @@
     if (confirmOverlay && confirmOverlay.parentNode) { confirmOverlay.parentNode.removeChild(confirmOverlay); confirmOverlay = null; }
     if (ratingMenuOverlay && ratingMenuOverlay.parentNode) { ratingMenuOverlay.parentNode.removeChild(ratingMenuOverlay); ratingMenuOverlay = null; }
     loadStyle(stream);
+    // Self-heal: showBg injects a blob URL with !important and no cleanup timer.
+    // That blob blocks the STREAM_RE walk below. Clear it (works even when bgRoot
+    // is null -- clearStaleRefreshStyle does a full shadow-DOM sweep as fallback).
+    clearStaleRefreshStyle();
+    if (historyPos >= 0) { historyPos = -1; window.__jaxHistoryPos = -1; }
+    // Consume any swipe-requested slide direction (set by fireSwipe). Capture the
+    // outgoing photo now, before the walk below injects the new bg. Reset the
+    // module flag immediately so a non-swipe reloadStream (menu paths) never slides.
+    var slideDir = pendingSlideDir; pendingSlideDir = 0;
+    var slideFrom = null;
+    if (slideDir) {
+      var fc = findCardBg();
+      if (fc) {
+        // random.jpg is overwrite-in-place: jax_stream.next already replaced the
+        // file, so the card's URL now resolves to the INCOMING bytes -- re-fetching
+        // it would show the new photo on both layers (no visible slide). Use the
+        // cached blob of the photo that was live (its true outgoing bytes) instead.
+        slideFrom = {
+          image: liveBlobUrl ? 'url("' + liveBlobUrl + '")' : fc.image,
+          size: fc.size, position: fc.position
+        };
+      }
+    }
     var stack = [document.documentElement];
     var guard = 0;
     while (stack.length && guard < 20000) {
@@ -418,6 +501,7 @@
                 fresh + '") !important; }';
               root.appendChild(st);
               window.__jaxLastReload = { stream: stream, url: fresh, t: Date.now() };
+              if (slideDir && slideFrom) { slidePhoto(fresh, slideDir, slideFrom); slideDir = 0; }
               (function (s) {
                 setTimeout(function () {
                   if (s && s.parentNode) s.parentNode.removeChild(s);
@@ -431,6 +515,38 @@
       var kids = node.children;
       if (kids) for (var j = 0; j < kids.length; j++) stack.push(kids[j]);
     }
+  }
+
+  // Remove any style[data-jax-refresh] that contains a blob URL. Those are
+  // injected by showBg() for history nav and have no cleanup timer; they block
+  // the STREAM_RE walk in reloadStream and currentPhotoSrc. Checks bgRoot first
+  // (fast path), then falls back to a full shadow-DOM sweep when bgRoot is null
+  // (e.g. fresh module load) -- also caches the found root into bgRoot.
+  function clearStaleRefreshStyle() {
+    var BLOB_RE = /url\(["']?blob:/;
+    if (bgRoot && bgRoot.querySelector) {
+      var st = bgRoot.querySelector("style[data-jax-refresh]");
+      if (st && BLOB_RE.test(st.textContent) && st.parentNode) {
+        st.parentNode.removeChild(st); return true;
+      }
+    }
+    var stack = [document];
+    var guard = 0;
+    while (stack.length && guard < 5000) {
+      guard++;
+      var n = stack.pop();
+      if (!n) continue;
+      var st2 = n.querySelector && n.querySelector("style[data-jax-refresh]");
+      if (st2 && BLOB_RE.test(st2.textContent) && st2.parentNode) {
+        if (n !== document) bgRoot = n;
+        st2.parentNode.removeChild(st2); return true;
+      }
+      var all = n.querySelectorAll ? n.querySelectorAll("*") : [];
+      for (var j = 0; j < all.length; j++) {
+        if (all[j].shadowRoot) stack.push(all[j].shadowRoot);
+      }
+    }
+    return false;
   }
 
   // Find the shadow root hosting the jax-stream ha-card. While live the card's
@@ -474,24 +590,71 @@
     return null;
   }
 
+  // First JPEG COM (comment) segment text, or null. Walks segments from SOI;
+  // stops at SOS (pixel data) so it never reads more than the header.
+  function readJpegComment(bytes) {
+    if (bytes[0] !== 0xFF || bytes[1] !== 0xD8) return null;
+    var i = 2;
+    while (i + 3 < bytes.length) {
+      if (bytes[i] !== 0xFF) { i++; continue; }
+      var m = bytes[i + 1];
+      // Standalone markers (no length): SOI/EOI, RST0-RST7, TEM
+      if (m === 0xD8 || m === 0xD9 || (m >= 0xD0 && m <= 0xD7) || m === 0x01) { i += 2; continue; }
+      if (m === 0xDA) break;                                     // SOS: pixel data
+      var len = (bytes[i + 2] << 8) | bytes[i + 3];             // big-endian, includes the 2 len bytes
+      if (m === 0xFE) {                                          // COM marker
+        var s = '';
+        for (var k = i + 4; k < i + 2 + len; k++) s += String.fromCharCode(bytes[k]);
+        return s;
+      }
+      i += 2 + len;
+    }
+    return null;
+  }
+
+  // Parse JPEG COM content into {prev, self, next} neighbor Immich UUIDs.
+  // Phase 2 format: "prev|self|next" (pipe-delimited; empty string -> null).
+  // Phase 1 compat: bare UUID with no pipe -> {prev: null, self: uuid, next: null}.
+  function parseJpegComment(com) {
+    if (!com) return { prev: null, self: null, next: null };
+    if (com.indexOf('|') === -1) {
+      return { prev: null, self: com || null, next: null };
+    }
+    var parts = com.split('|');
+    return {
+      prev: parts[0] || null,
+      self: parts[1] || null,
+      next: parts[2] || null
+    };
+  }
+
   // Capture the bytes of the currently-live photo into a blob: URL so back-nav
   // can show it later, after the server has overwritten random.jpg. Idempotent
   // per source string; only the most recent capture is kept.
+  // Parses the embedded Immich asset_id from the JPEG COM marker (Phase 2 pipe
+  // format: prev|self|next) and stores identity + neighbor UUIDs -- they travel
+  // WITH the pixels, never drift from the display state.
   function captureLive(src) {
     if (!src || src === liveBlobSrc) return;
     var m = src.match(/url\(["']?([^"')]+)/);
     var fetchUrl = m ? m[1] : src;   // keep ?v= -- fetches the bytes live RIGHT NOW
     liveBlobSrc = src;
     fetch(fetchUrl, { credentials: "include" })
-      .then(function (r) { return r.ok ? r.blob() : null; })
-      .then(function (b) {
-        if (!b) return;
+      .then(function (r) { return r.ok ? r.arrayBuffer() : null; })
+      .then(function (ab) {
+        if (!ab) return;
+        var bytes = new Uint8Array(ab);
+        var neighbors = parseJpegComment(readJpegComment(bytes));
+        var b = new Blob([bytes], { type: "image/jpeg" });
         var u = URL.createObjectURL(b);
         if (liveBlobSrc === src) {
           // Replace any earlier live blob that was never pushed to history.
           if (liveBlobUrl) URL.revokeObjectURL(liveBlobUrl);
           liveBlobUrl = u;
+          displayedAssetId = neighbors.self;
           window.__jaxLiveBlobUrl = u;
+          window.__jaxDisplayedAssetId = neighbors.self;
+          window.__jaxNeighbors = neighbors;
         } else {
           URL.revokeObjectURL(u);  // a newer photo superseded this capture
         }
@@ -501,10 +664,11 @@
 
   // Paint a cached blob: URL as the background. blobUrl is immutable so no
   // cache-buster is appended (a ?v= query would break the blob URL).
-  function showBg(blobUrl, stream) {
+  function showBg(blobUrl, stream, slideDir) {
     if (!blobUrl) return;
     var root = findBgRoot(stream);
     if (!root) return;
+    var fromCard = slideDir ? findCardBg() : null;  // outgoing, before the swap
     var prev = root.querySelector && root.querySelector("style[data-jax-refresh]");
     if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
     var st = document.createElement("style");
@@ -513,15 +677,194 @@
       'ha-card::before, ha-card::after { background-image: url("' + blobUrl + '") !important; }';
     root.appendChild(st);
     window.__jaxLastReload = { stream: stream, url: blobUrl, t: Date.now() };
+    if (slideDir && fromCard) slidePhoto(blobUrl, slideDir, fromCard);
+  }
+
+  // --- Directional slide transition ----------------------------------------
+  // Animate a swipe-driven photo change as a horizontal slide that follows the
+  // finger. dirSign: +1 = advancing (next) -> new photo enters from the RIGHT,
+  // old exits LEFT (finger swiped left). -1 = going back (previous) -> new
+  // enters from the LEFT, old exits RIGHT (finger swiped right). The photo
+  // lives in the ha-card ::after/::before background (size:contain), which
+  // cannot be transformed directly -- so we float a fixed full-viewport overlay
+  // holding the outgoing + incoming images (replicating the card's computed
+  // background metrics), slide it, then let the already-painted real bg show
+  // through when the overlay is torn down. Organic auto-advances never call
+  // this (slideDir defaults to 0), so only swipes animate.
+  var slideOverlay = null;   // active slide overlay element (one at a time)
+  var slideTimer   = null;   // teardown fallback timer
+
+  function clearSlide() {
+    if (slideTimer) { clearTimeout(slideTimer); slideTimer = null; }
+    if (slideOverlay && slideOverlay.parentNode) {
+      slideOverlay.parentNode.removeChild(slideOverlay);
+    }
+    slideOverlay = null;
+  }
+
+  // Find the ha-card whose ::after/::before paints the photo and return its
+  // computed background image + sizing so the slide layers match exactly.
+  function findCardBg() {
+    var stack = [document.documentElement];
+    var guard = 0;
+    while (stack.length && guard < 20000) {
+      guard++;
+      var n = stack.pop();
+      if (!n) continue;
+      if (n.nodeType === 1) {
+        var pseudo = null, img = "";
+        try {
+          var a = getComputedStyle(n, "::after").backgroundImage;
+          if (a && a !== "none" && (STREAM_RE.test(a) || a.indexOf("blob:") !== -1)) {
+            pseudo = "::after"; img = a;
+          } else {
+            var b = getComputedStyle(n, "::before").backgroundImage;
+            if (b && b !== "none" && (STREAM_RE.test(b) || b.indexOf("blob:") !== -1)) {
+              pseudo = "::before"; img = b;
+            }
+          }
+        } catch (e) {}
+        if (pseudo) {
+          var cs = getComputedStyle(n, pseudo);
+          return { image: img, size: cs.backgroundSize, position: cs.backgroundPosition };
+        }
+        if (n.shadowRoot) stack.push(n.shadowRoot);
+      }
+      var k = n.children;
+      if (k) for (var j = 0; j < k.length; j++) stack.push(k[j]);
+    }
+    return null;
+  }
+
+  function slidePhoto(newUrl, dirSign, fromCard) {
+    try {
+      if (!newUrl || !dirSign) return false;
+      // fromCard is the OUTGOING photo captured by the caller BEFORE it swapped
+      // the real bg (the injected !important style would otherwise make us read
+      // the new image as outgoing). Fall back to a live read only as a guard.
+      var card = fromCard || findCardBg();
+      if (!card) return false;
+      clearSlide();
+      var host = document.body || document.documentElement;
+      var ov = document.createElement("div");
+      ov.setAttribute("data-jax-slide", "1");
+      ov.style.cssText =
+        "position:fixed;inset:0;z-index:9000;overflow:hidden;pointer-events:none;";
+      var common =
+        "position:absolute;top:0;left:0;width:100%;height:100%;" +
+        "background-repeat:no-repeat;background-size:" + card.size + ";" +
+        "background-position:" + card.position + ";will-change:transform;";
+      var outg = document.createElement("div");
+      outg.style.cssText = common +
+        "background-image:" + card.image + ";transform:translateX(0);";
+      var inc = document.createElement("div");
+      inc.style.cssText = common +
+        'background-image:url("' + newUrl + '");transform:translateX(' +
+        (dirSign > 0 ? "100%" : "-100%") + ");";
+      ov.appendChild(outg);
+      ov.appendChild(inc);
+      host.appendChild(ov);
+      slideOverlay = ov;
+      // Record both layer images (truncated) for tests: the outgoing must be the
+      // cached blob on advance (proves the random.jpg overwrite fix) and the two
+      // layers must differ (proves a real two-photo slide, not the same image).
+      window.__jaxLastSlide = {
+        dir: dirSign,
+        out: card.image.slice(0, 48),
+        inc: ('url("' + newUrl + '")').slice(0, 48),
+        t: Date.now()
+      };
+      var dur = 350;
+      var ease = "cubic-bezier(.22,.61,.36,1)";
+      var started = false;
+      function startAnim() {
+        if (started || ov !== slideOverlay) return;
+        started = true;
+        // Force layout so the initial transform is committed before transition.
+        void ov.offsetWidth;
+        outg.style.transition = "transform " + dur + "ms " + ease;
+        inc.style.transition  = "transform " + dur + "ms " + ease;
+        outg.style.transform = "translateX(" + (dirSign > 0 ? "-100%" : "100%") + ")";
+        inc.style.transform  = "translateX(0)";
+        slideTimer = setTimeout(clearSlide, dur + 250);
+      }
+      // Warm the incoming image so it paints in sync with the slide; fall back
+      // to animating anyway if the load stalls (LAN fetch is usually instant).
+      var pre = new Image();
+      pre.onload = startAnim;
+      pre.onerror = startAnim;
+      pre.src = newUrl;
+      setTimeout(startAnim, 400);
+      return true;
+    } catch (e) {
+      clearSlide();
+      return false;
+    }
   }
 
   // Append to history, evicting + revoking the oldest blob past the cap of 10.
   function pushHistory(blobUrl, stream) {
-    photoHistory.push({ blobUrl: blobUrl, stream: stream });
+    photoHistory.push({ blobUrl: blobUrl, stream: stream, assetId: displayedAssetId });
     if (photoHistory.length > 10) {
       var ev = photoHistory.shift();
       if (ev && ev.blobUrl) URL.revokeObjectURL(ev.blobUrl);
     }
+  }
+
+  // Phase 4: pre-load server past-window into photoHistory on init so back-nav
+  // works after a page reload (in-memory blob history is lost on reload but the
+  // coordinator retains M past frames in its ring buffer). Fire-and-forget --
+  // any error silently degrades to "no history" so back-nav still works from
+  // newly-captured photos. Only runs once per module injection.
+  function loadServerPastHistory(stream) {
+    if (_serverHistoryLoaded) return;
+    _serverHistoryLoaded = true;
+    var stateUrl = '/jax_stream_data/' + stream + '/state.json?v=' + Date.now();
+    fetch(stateUrl, { credentials: 'include' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(state) {
+        if (!state || !state.past_count || state.past_count < 1) {
+          window.__jaxServerHistoryLoaded = true;
+          return;
+        }
+        var pastCount = Math.min(parseInt(state.past_count, 10) || 0, 5);
+        var head = parseInt(state.head, 10) || 0;
+        var slotKeys = Object.keys(state.slots || {});
+        var ringSize = slotKeys.length;
+        if (!ringSize || pastCount < 1) { window.__jaxServerHistoryLoaded = true; return; }
+        // Fetch past slots oldest-first so pushHistory appends in chronological order.
+        // navBack steps from the newest entry (array end) backwards -- correct ordering.
+        var ks = [];
+        for (var k = pastCount; k >= 1; k--) ks.push(k);
+        (function fetchNext() {
+          if (!ks.length) { window.__jaxServerHistoryLoaded = true; return; }
+          var k = ks.shift();
+          var idx = (head - k + ringSize) % ringSize;
+          var padded = idx < 10 ? '0' + idx : '' + idx;
+          var url = '/jax_stream_data/' + stream + '/window/slot_' + padded + '.jpg?v=' + Date.now();
+          fetch(url, { credentials: 'include' })
+            .then(function(r) { return r.ok ? r.arrayBuffer() : null; })
+            .then(function(ab) {
+              if (ab && ab.byteLength > 4) {
+                var bytes = new Uint8Array(ab);
+                if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) {
+                  var neighbors = parseJpegComment(readJpegComment(bytes));
+                  var assetId = (neighbors && neighbors.self) || null;
+                  var b = new Blob([bytes], { type: 'image/jpeg' });
+                  var blobUrl = URL.createObjectURL(b);
+                  photoHistory.push({ blobUrl: blobUrl, stream: stream, assetId: assetId });
+                  if (photoHistory.length > 10) {
+                    var ev = photoHistory.shift();
+                    if (ev && ev.blobUrl) URL.revokeObjectURL(ev.blobUrl);
+                  }
+                }
+              }
+              fetchNext();
+            })
+            .catch(function() { fetchNext(); });
+        }());
+      })
+      .catch(function() { window.__jaxServerHistoryLoaded = true; });
   }
 
   function navTo(historyEntryPos, stream) {
@@ -529,7 +872,8 @@
     window.__jaxHistoryPos = historyPos;
     window.__jaxLastBack = { pos: historyPos, url: photoHistory[historyPos].blobUrl, t: Date.now() };
     showStatus("Back", "#5599ff");
-    showBg(photoHistory[historyPos].blobUrl, stream);
+    // Going to a previous photo: it enters from the LEFT (dirSign -1).
+    showBg(photoHistory[historyPos].blobUrl, stream, -1);
   }
 
   function navBack(stream) {
@@ -552,17 +896,18 @@
   }
 
   function navForward(stream) {
-    if (historyPos < 0) { fireSwipe("right", stream); return; }
+    // Advancing to a next photo: it enters from the RIGHT (dirSign +1).
+    if (historyPos < 0) { fireSwipe("right", stream, 1); return; }
     var nextPos = historyPos + 1;
     if (nextPos >= photoHistory.length) {
       historyPos = -1; histNavSuppress = true; window.__jaxHistoryPos = -1;
-      fireSwipe("right", stream); return;
+      fireSwipe("right", stream, 1); return;
     }
     historyPos = nextPos; histNavSuppress = true; window.__jaxHistoryPos = historyPos;
-    showBg(photoHistory[historyPos].blobUrl, stream);
+    showBg(photoHistory[historyPos].blobUrl, stream, 1);
   }
 
-  function fireSwipe(direction, stream) {
+  function fireSwipe(direction, stream, slideDir) {
     var hass = getHass();
     if (!hass) return;
     var dismiss = showStatus(
@@ -570,15 +915,17 @@
       direction === "left" ? "#ff5555" : "#55dd55"
     );
     var delay = typeof CFG.refreshDelayMs === "number" ? CFG.refreshDelayMs : 3000;
-    window.__jaxLastSwipe = { direction: direction, stream: stream, t: Date.now() };
+    // __jaxLastSwipe is recorded by onEnd (the gesture owner) so it survives every
+    // swipe path, including history nav. Don't clobber it here.
+    var svcDomain = "jax_stream";
+    var svcName   = direction === "right" ? "next" : "remove";
+    var svcData   = { stream: stream };
     Promise.resolve(
-      hass.callService("shell_command", "jax_stream_action", {
-        subcommand: "swipe",
-        stream: stream,
-        direction: direction,
-      })
+      hass.callService(svcDomain, svcName, svcData)
     ).then(function () {
       setTimeout(function () {
+        // Hand the slide direction to reloadStream so the fresh image slides in.
+        pendingSlideDir = slideDir || 0;
         reloadStream(stream);
         setTimeout(dismiss, 800);
         // Fire prefetch directly on swipe; checkPhotoChange covers organic advances.
@@ -602,7 +949,7 @@
 
   function onStart(e) {
     if (e.touches && e.touches.length > 1) { tracking = false; return; }
-    if (!onClockView()) { tracking = false; return; }
+    if (!jaxReady()) { tracking = false; return; }
     if (isJaxUi(e.target)) { tracking = false; return; }
     var p = pointOf(e);
     startX = p.clientX; startY = p.clientY; startT = Date.now();
@@ -648,11 +995,18 @@
 
     lastFire = now;
     if (e.stopPropagation) e.stopPropagation();
+    // Standard carousel convention so the photo follows the finger: swipe LEFT
+    // advances to the NEXT photo (new enters from the right), swipe RIGHT goes
+    // to the PREVIOUS photo (old returns from the left). This is the reverse of
+    // the pre-slide mapping; the directional slide makes the old mapping feel
+    // backwards. The slide itself is wired in navForward/navBack.
     var dir = dx < 0 ? "left" : "right";
-    if (dir === "left") {
-      navBack(stream);
-    } else {
+    var action = dir === "left" ? "next" : "prev";
+    window.__jaxLastSwipe = { finger: dir, action: action, stream: stream, t: now };
+    if (action === "next") {
       navForward(stream);
+    } else {
+      navBack(stream);
     }
     // A deliberate swipe auto-unpauses (clears the manual hold); the touch
     // window armed above keeps the landed photo for 90s.
@@ -694,9 +1048,18 @@
   // don't spawn a shell command on every touch).
   function armTouchWindow(stream) {
     var now = Date.now();
+    // Ignore the compatibility-mouseup the WebView synthesizes right after a
+    // dismiss tap -- it lands on the photo behind the hidden badge and would
+    // otherwise silently re-arm the window we just cleared.
+    if (now - lastTouchDismissAt < 600) return;
     if (now - lastTouchArm < TOUCH_ARM_DEBOUNCE_MS) return;
     lastTouchArm = now;
+    // Mirror the server: a fired touch sets the deadline now+90s. A debounced-out
+    // touch returns above WITHOUT moving touchDeadline, so the ring keeps showing
+    // the real remaining time (never falsely refilled by a no-op touch).
+    touchDeadline = now + TOUCH_WINDOW_MS;
     firePauseAction("touch", stream);
+    surfaceTouchIndicator();
   }
 
   function doPause(stream) {
@@ -724,7 +1087,7 @@
   // the touch window -- e.g. the unpause indicator must not re-suppress).
   function isJaxUi(node) {
     if (!node) return false;
-    var ctrls = [jaxMenuTrigger, pauseIndicator, jaxMenuOverlay, confirmOverlay, ratingMenuOverlay];
+    var ctrls = [jaxMenuTrigger, pauseIndicator, touchIndicator, jaxMenuOverlay, confirmOverlay, ratingMenuOverlay];
     for (var i = 0; i < ctrls.length; i++) {
       var c = ctrls[i];
       if (c && (c === node || (c.contains && c.contains(node)))) return true;
@@ -747,7 +1110,7 @@
     // Aligned with the flyout's first item (left:11 + translateX 63) so it reads
     // as the pause control persisting just right of the jaxicon.
     pauseIndicator.style.cssText =
-      "position:fixed;top:15px;left:11px;width:55px;height:55px;" +
+      "position:fixed;top:15px;left:11px;width:7vw;height:7vw;" +
       "transform:translateX(63px);background:rgba(0,0,0,0.45);border-radius:10px;" +
       "display:none;align-items:center;justify-content:center;" +
       "z-index:99991;cursor:pointer;user-select:none;";
@@ -776,7 +1139,7 @@
   // dependency (the indicator could stay hidden if an overlay lingered).
   function syncPauseIndicator() {
     ensurePauseIndicator();
-    var show = paused && onClockView();
+    var show = paused && jaxReady();
     pauseIndicator.style.display = show ? "flex" : "none";
   }
 
@@ -790,8 +1153,94 @@
       .catch(function () {});
   }
 
+  // --- Touch-hold decaying indicator ---------------------------------------
+  // Built once, lazily; shares the manual indicator's spot (the two states are
+  // mutually exclusive -- touch shows only when NOT manually paused). z 99988
+  // sits below the manual indicator (99991) and flyout (99992).
+  function ensureTouchIndicator() {
+    if (touchIndicator) return;
+    document.querySelectorAll("body > div").forEach(function (el) {
+      if (el.style.zIndex === "99988" && el.parentNode) el.parentNode.removeChild(el);
+    });
+    touchIndicator = document.createElement("div");
+    touchIndicator.style.cssText =
+      "position:fixed;top:15px;left:11px;width:7vw;height:7vw;" +
+      "transform:translateX(63px);background:rgba(0,0,0,0.45);border-radius:10px;" +
+      "display:none;align-items:center;justify-content:center;" +
+      "z-index:99988;cursor:pointer;user-select:none;";
+    touchIndicator.innerHTML = TOUCH_RING_SVG + PAUSE_SVG;  // ring + pause-bars glyph
+    function onTouchIndicatorActivate(e) { e.stopPropagation(); dismissTouchIndicator(true); }
+    touchIndicator.addEventListener("touchstart", function (e) { e.stopPropagation(); }, { capture: true });
+    touchIndicator.addEventListener("touchend", onTouchIndicatorActivate, { capture: true });
+    touchIndicator.addEventListener("mousedown", function (e) { e.stopPropagation(); }, true);
+    touchIndicator.addEventListener("mouseup", onTouchIndicatorActivate, true);
+    document.body.appendChild(touchIndicator);
+  }
+
+  // Surface on a real arm, unless dismissed for this same photo (sticky per photo)
+  // or manually paused (that indicator dominates).
+  function surfaceTouchIndicator() {
+    if (paused || !jaxReady()) return;
+    if (lastPhotoSrc !== null && touchDismissed === lastPhotoSrc) return;
+    ensureTouchIndicator();
+    touchIndicator.style.display = "flex";
+    startTouchRing();
+  }
+
+  function startTouchRing() {
+    if (touchRingTimer) clearInterval(touchRingTimer);
+    updateTouchRing();
+    touchRingTimer = setInterval(updateTouchRing, 250);
+  }
+
+  function updateTouchRing() {
+    if (!touchIndicator) return;
+    var remaining = touchDeadline - Date.now();
+    if (remaining <= 0 || paused) { hideTouchIndicator(); return; }
+    var frac = remaining / TOUCH_WINDOW_MS;
+    if (frac > 1) frac = 1;
+    var ring = touchIndicator.querySelector(".jax-ring");
+    if (ring) ring.setAttribute("stroke-dashoffset", (TOUCH_RING_CIRC * (1 - frac)).toFixed(1));
+  }
+
+  function hideTouchIndicator() {
+    if (touchRingTimer) { clearInterval(touchRingTimer); touchRingTimer = null; }
+    if (touchIndicator) touchIndicator.style.display = "none";
+  }
+
+  // Tap = resume now: hide, mark dismissed for this photo, and clear the server
+  // touch window so the slideshow resumes its normal advance. resume=false is
+  // the non-interactive teardown (manual pause / photo change took over).
+  function dismissTouchIndicator(resume) {
+    touchDismissed = lastPhotoSrc;
+    lastTouchDismissAt = Date.now();
+    touchDeadline = 0;
+    hideTouchIndicator();
+    if (resume) {
+      var stream = currentStream();
+      if (stream && !paused) firePauseAction("resume", stream);  // clears _touch_deadline (D-08)
+    }
+  }
+
+  // Restore the badge after a VA bounce / view reload (browser state lost; the
+  // file persists). pause_touch.txt holds an integer epoch deadline (0/absent =
+  // not armed). Mirrors readPauseState.
+  function readTouchState(stream) {
+    if (!stream) return;
+    fetch('/view_assist/images/jax-stream/' + stream + '/pause_touch.txt?v=' + Date.now())
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (t) {
+        if (t === null) return;
+        var dl = parseInt(t, 10);
+        if (!dl) return;
+        touchDeadline = dl * 1000;
+        if (touchDeadline - Date.now() > 0) surfaceTouchIndicator();
+      })
+      .catch(function () {});
+  }
+
   // Corner menu trigger -- shown only on the clock view. Provides jax-stream
-  // actions (pause, remove, rate) without depending on VA's hamburger menu API,
+  // actions (pause, remove, rate, rotate) without depending on VA's hamburger menu API,
   // which does not support runtime menu item removal in the installed version.
   var jaxMenuTrigger = null;
   var jaxMenuOverlay = null;
@@ -816,7 +1265,7 @@
     });
     jaxMenuTrigger = document.createElement("div");
     jaxMenuTrigger.style.cssText =
-      "position:fixed;top:15px;left:11px;width:55px;height:55px;" +
+      "position:fixed;top:15px;left:11px;width:7vw;height:7vw;" +
       "background:rgba(0,0,0,0);" +
       "display:flex;align-items:center;justify-content:center;" +
       "z-index:99990;cursor:pointer;user-select:none;";
@@ -826,7 +1275,7 @@
     // style.css by jax_stream_action.sh write_conf). Softens the stark white
     // jaxicon toward the lighter weight of the VA menu icons. Fallback 0.8
     // applies before style.css loads or if the var is absent.
-    jaxImg.style.cssText = "height:48px;width:auto;opacity:var(--jax-icon-opacity, 0.8);";
+    jaxImg.style.cssText = "height:87%;width:auto;opacity:var(--jax-icon-opacity, 0.8);";
     jaxImg.alt = "";
     jaxImg.onerror = function() {
       if (jaxMenuTrigger && jaxImg.parentNode) jaxImg.parentNode.removeChild(jaxImg);
@@ -852,7 +1301,7 @@
   }
 
   function syncJaxMenuTrigger() {
-    if (onClockView()) {
+    if (jaxReady()) {
       ensureJaxMenuTrigger();
       if (jaxMenuTrigger) jaxMenuTrigger.style.display = "flex";
     } else {
@@ -867,16 +1316,52 @@
     hideHint();
 
     var REMOVE_SVG =
-      '<svg pointer-events="none" width="28" height="28" viewBox="0 0 28 28" fill="none">' +
+      '<svg pointer-events="none" width="80%" height="80%" viewBox="0 0 28 28" fill="none">' +
       '<rect x="1" y="4" width="26" height="20" rx="2" stroke="white" stroke-width="2" fill="rgba(255,255,255,0.08)"/>' +
       '<polyline points="3,20 9,12 15,17 20,11 27,16" stroke="rgba(255,255,255,0.4)" stroke-width="1.5" fill="none"/>' +
       '<line x1="7" y1="8" x2="21" y2="20" stroke="#ff5555" stroke-width="3" stroke-linecap="round"/>' +
       '<line x1="21" y1="8" x2="7" y2="20" stroke="#ff5555" stroke-width="3" stroke-linecap="round"/>' +
       '</svg>';
     var RATE_SVG =
-      '<svg pointer-events="none" width="28" height="28" viewBox="0 0 24 24">' +
+      '<svg pointer-events="none" width="80%" height="80%" viewBox="0 0 24 24">' +
       '<polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26" stroke="#ffcc44" stroke-width="1.5" fill="#ffcc44"/>' +
       '</svg>';
+    // Circular arrows for the rotate buttons (90 = clockwise, 270 = CCW deltas).
+    var ROTCW_SVG =
+      '<svg pointer-events="none" width="74%" height="74%" viewBox="0 0 24 24" fill="none">' +
+      '<path d="M20 12a8 8 0 1 1-2.34-5.66" stroke="white" stroke-width="2.2" stroke-linecap="round"/>' +
+      '<polyline points="20,3 20,7 16,7" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '</svg>';
+    var ROTCCW_SVG =
+      '<svg pointer-events="none" width="74%" height="74%" viewBox="0 0 24 24" fill="none">' +
+      '<path d="M4 12a8 8 0 1 0 2.34-5.66" stroke="white" stroke-width="2.2" stroke-linecap="round"/>' +
+      '<polyline points="4,3 4,7 8,7" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '</svg>';
+
+    // Rotate handler factory: delta is CW degrees (90 = CW, 270 = CCW). Captures
+    // identity at tap time (same drift-prevention pattern as Remove/Rate) and
+    // reloads after the service resolves -- jax_stream.rotate blocks until Immich
+    // regenerated the corrected preview and the coordinator rewrote random.jpg.
+    function makeRotate(delta) {
+      return function() {
+        if (!stream) return;
+        var hass = getHass();
+        if (!hass) return;
+        var s = stream;
+        var rotAssetId = (historyPos >= 0 && photoHistory[historyPos])
+          ? photoHistory[historyPos].assetId
+          : displayedAssetId;
+        var dismiss = showStatus("Rotating", "#44aaff");
+        var svcArgs = { stream: s, angle: delta };
+        if (rotAssetId) svcArgs.asset_id = rotAssetId;
+        window.__jaxLastRotate = { stream: s, asset_id: rotAssetId, angle: delta, t: Date.now() };
+        Promise.resolve(
+          hass.callService("jax_stream", "rotate", svcArgs)
+        ).then(function() {
+          reloadStream(s); setTimeout(dismiss, 800);
+        }).catch(function(err) { dismiss(); console.error("[jax-stream] rotate failed:", err); });
+      };
+    }
 
     // Transparent click-catcher: outside tap dismisses menu
     var catcher = document.createElement("div");
@@ -904,29 +1389,25 @@
         onTap: function() {
           if (!stream) return;
           var s = stream;
-          // Snapshot the asset id from current.txt at tap time so a background
-          // auto-advance during the confirm dialog window removes the intended
-          // photo, not the one that advanced into view after the user decided to remove.
-          fetch('/view_assist/images/jax-stream/' + s + '/current.txt?v=' + Date.now())
-            .then(function(r) { return r.ok ? r.text() : ''; })
-            .then(function(t) { return (t || '').trim(); })
-            .catch(function() { return ''; })
-            .then(function(capturedAssetId) {
-              showConfirm(function() {
-                var hass = getHass();
-                if (!hass) return;
-                var dismiss = showStatus("Removing", "#ff5555");
-                var delay = typeof CFG.refreshDelayMs === "number" ? CFG.refreshDelayMs : 3000;
-                var svcArgs = { stream: s };
-                if (capturedAssetId) svcArgs.asset_id = capturedAssetId;
-                window.__jaxLastRemove = { stream: s, asset_id: capturedAssetId, t: Date.now() };
-                Promise.resolve(
-                  hass.callService("jax_stream", "remove", svcArgs)
-                ).then(function() {
-                  setTimeout(function() { reloadStream(s); setTimeout(dismiss, 800); }, delay);
-                }).catch(function(err) { dismiss(); console.error("[jax-stream] remove_confirm failed:", err); });
-              }, null);
-            });
+          // Identity is embedded in the displayed JPEG bytes and captured at
+          // display time -- no current.txt fetch needed, no drift possible.
+          var capturedAssetId = (historyPos >= 0 && photoHistory[historyPos])
+            ? photoHistory[historyPos].assetId
+            : displayedAssetId;
+          showConfirm(function() {
+            var hass = getHass();
+            if (!hass) return;
+            var dismiss = showStatus("Removing", "#ff5555");
+            var delay = typeof CFG.refreshDelayMs === "number" ? CFG.refreshDelayMs : 3000;
+            var svcArgs = { stream: s };
+            if (capturedAssetId) svcArgs.asset_id = capturedAssetId;
+            window.__jaxLastRemove = { stream: s, asset_id: capturedAssetId, t: Date.now() };
+            Promise.resolve(
+              hass.callService("jax_stream", "remove", svcArgs)
+            ).then(function() {
+              setTimeout(function() { reloadStream(s); setTimeout(dismiss, 800); }, delay);
+            }).catch(function(err) { dismiss(); console.error("[jax-stream] remove_confirm failed:", err); });
+          }, null);
         }
       },
       {
@@ -936,6 +1417,10 @@
           var hass = getHass();
           if (!hass) return;
           var s = stream;
+          // Capture identity at tap time -- same drift-prevention pattern as Remove.
+          var ratingAssetId = (historyPos >= 0 && photoHistory[historyPos])
+            ? photoHistory[historyPos].assetId
+            : displayedAssetId;
           var prefetchAge = Date.now() - ratingPrefetchTime;
           var prefetchFresh = ratingPrefetchStream === s && prefetchAge < 60000;
           // rate_menu prefetch removed: coordinator writes rate_current.txt on every advance (D-11).
@@ -950,19 +1435,21 @@
               .then(function(ratingStr) {
                 var cur = parseInt(ratingStr.trim(), 10);
                 if (isNaN(cur) || cur < 0 || cur > 5) cur = 0;
-                openRatingMenu(s, cur);
+                openRatingMenu(s, cur, ratingAssetId);
               })
-              .catch(function() { openRatingMenu(s, 0); });
+              .catch(function() { openRatingMenu(s, 0, ratingAssetId); });
           }, waitMs);
         }
-      }
+      },
+      { svg: ROTCCW_SVG, onTap: makeRotate(270) },
+      { svg: ROTCW_SVG,  onTap: makeRotate(90)  }
     ];
 
     itemDefs.forEach(function(def, i) {
       var btn = document.createElement("div");
       var targetX = 63 + i * 63;
       btn.style.cssText =
-        "position:fixed;top:15px;left:11px;width:55px;height:55px;" +
+        "position:fixed;top:15px;left:11px;width:7vw;height:7vw;" +
         "background:rgba(0,0,0,0.55);border-radius:10px;" +
         "display:flex;align-items:center;justify-content:center;" +
         "z-index:99992;cursor:pointer;user-select:none;" +
@@ -1019,8 +1506,18 @@
 
   function checkPhotoChange() {
     var src = currentPhotoSrc();
-    if (!src) return;
+    if (!src) {
+      // After 30 s of null src (blob injection blocking STREAM_RE with no swipe to
+      // trigger reloadStream), clear the stale style so the native URL shows through.
+      if (++nullSrcStreak >= 100) { nullSrcStreak = 0; clearStaleRefreshStyle(); }
+      return;
+    }
+    nullSrcStreak = 0;
     if (lastPhotoSrc !== null && src !== lastPhotoSrc) {
+      // New photo -> the touch badge's sticky dismiss resets so it can surface
+      // again on the next touch. (A badge persisting across this change is always
+      // a swipe re-arm, which re-surfaces for the new photo -- don't hide it.)
+      touchDismissed = null;
       if (histNavSuppress) {
         histNavSuppress = false;
         lastPhotoSrc = src;
@@ -1070,8 +1567,8 @@
   // isn't in the DOM yet (button-card renders background asynchronously).
   (function tryLoadStyle() {
     var s = currentStream();
-    if (s) { loadStyle(s); readPauseState(s); return; }
-    setTimeout(function() { var s2 = currentStream(); if (s2) { loadStyle(s2); readPauseState(s2); } }, 2000);
+    if (s) { loadStyle(s); readPauseState(s); readTouchState(s); loadServerPastHistory(s); return; }
+    setTimeout(function() { var s2 = currentStream(); if (s2) { loadStyle(s2); readPauseState(s2); readTouchState(s2); loadServerPastHistory(s2); } }, 2000);
   })();
   window.addEventListener("location-changed", syncAll);
   window.addEventListener("popstate", syncAll);
@@ -1101,7 +1598,7 @@
       if (photoHistory[i] && photoHistory[i].blobUrl) URL.revokeObjectURL(photoHistory[i].blobUrl);
     }
     if (liveBlobUrl) URL.revokeObjectURL(liveBlobUrl);
-    liveBlobUrl = null; liveBlobSrc = null; window.__jaxLiveBlobUrl = null;
+    liveBlobUrl = null; liveBlobSrc = null; displayedAssetId = null; window.__jaxLiveBlobUrl = null;
   }
 
   window.__jaxHistoryPos = -1;
@@ -1121,6 +1618,11 @@
   // Test hook: reset LOCAL pause state to not-paused (server files are cleared
   // separately via the 'resume' shell action). Test instrumentation only.
   window.__jaxResetPauseState = function() { paused = false; window.__jaxPaused = false; lastTouchArm = 0; syncPauseIndicator(); };
+  // Test hooks for the touch-hold badge. Reset clears sticky dismiss + deadline +
+  // the dismiss guard; expire forces the window past its deadline to assert
+  // auto-hide without a real 90s wait. Test instrumentation only.
+  window.__jaxResetTouchIndicator = function() { touchDismissed = null; touchDeadline = 0; lastTouchDismissAt = 0; hideTouchIndicator(); };
+  window.__jaxExpireTouchWindow = function() { touchDeadline = Date.now() - 1; updateTouchRing(); };
 
   window.__jaxStreamSwipeDestroy = function () {
     clearInterval(syncInterval);
@@ -1142,17 +1644,25 @@
     closeJaxMenu();
     if (jaxMenuTrigger && jaxMenuTrigger.parentNode) { jaxMenuTrigger.parentNode.removeChild(jaxMenuTrigger); jaxMenuTrigger = null; }
     if (pauseIndicator && pauseIndicator.parentNode) { pauseIndicator.parentNode.removeChild(pauseIndicator); pauseIndicator = null; }
+    if (touchRingTimer) { clearInterval(touchRingTimer); touchRingTimer = null; }
+    clearSlide(); pendingSlideDir = 0;
+    if (touchIndicator && touchIndicator.parentNode) { touchIndicator.parentNode.removeChild(touchIndicator); touchIndicator = null; }
+    touchDeadline = 0; touchDismissed = null; lastTouchDismissAt = 0;
     paused = false; lastTouchArm = 0;
     if (window.__jaxActiveToast) { try { window.__jaxActiveToast(); } catch (e) {} window.__jaxActiveToast = null; }
     revokeAllBlobs();
-    photoHistory = []; historyPos = -1; histNavSuppress = false; bgRoot = null;
+    photoHistory = []; historyPos = -1; histNavSuppress = false; bgRoot = null; nullSrcStreak = 0;
     delete window.__jaxHistoryPos; delete window.__jaxHistory;
     delete window.__jaxLastBack;   delete window.__jaxClearHistory;
     delete window.__jaxLiveBlobUrl;
+    delete window.__jaxDisplayedAssetId;
     delete window.__jaxResetSwipeCooldown;
     delete window.__jaxResetTouchArm;
+    delete window.__jaxResetTouchIndicator;
+    delete window.__jaxExpireTouchWindow;
     delete window.__jaxResetPauseState;
     delete window.__jaxLastSwipe;
+    delete window.__jaxLastSlide;
     delete window.__jaxLastRating;
     delete window.__jaxLastRemove;
     delete window.__jaxLastReload;
@@ -1163,6 +1673,7 @@
     delete window.__jaxLastPauseCall;
     delete window.__jaxStreamSwipeLoaded;
     delete window.__jaxStreamSwipeDestroy;
+    delete window.__jaxServerHistoryLoaded;
   };
 
   // eslint-disable-next-line no-console

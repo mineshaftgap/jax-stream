@@ -90,6 +90,24 @@ SERVICE_SET_RATING = "set_rating"
 SERVICE_TOUCH      = "touch"
 SERVICE_PAUSE      = "pause"
 SERVICE_RESUME     = "resume"
+SERVICE_ROTATE     = "rotate"
+
+# ---------------------------------------------------------------------------
+# Photo rotate (Immich non-destructive edit). Verified against live Immich
+# 2.5.6 (probe 2026-06-07 -- see DEVEL/immich-api.md "Non-destructive rotate"):
+#   - PUT /api/assets/{id}/edits {"edits":[{"action":"rotate",...}]} needs
+#     the asset.edit.create scope; angle is ABSOLUTE (replaceAll semantics).
+#   - The rotated rendition is served ONLY via ?edited=true; the plain
+#     /thumbnail?size=preview always returns the ORIGINAL orientation.
+#   - Regen is async (worker queue; ~2.5s observed) -- poll edited=true until
+#     the bytes change, capped by ROTATE_REGEN_TIMEOUT_S.
+# Menu sends a delta (90 = CW, 270 = CCW); the coordinator tracks the
+# absolute angle per asset in memory (asset.edit.read is not granted, so the
+# current edit cannot be read back from the server).
+# ---------------------------------------------------------------------------
+ROTATE_ALLOWED_DELTAS = (90, 180, 270)
+ROTATE_REGEN_TIMEOUT_S = 6.0
+ROTATE_REGEN_POLL_S = 0.5
 
 # ---------------------------------------------------------------------------
 # Phase 3: frontend module delivery (FE-01, D-04)
@@ -99,6 +117,27 @@ SERVICE_RESUME     = "resume"
 # ---------------------------------------------------------------------------
 JS_FILENAME   = "jax_stream.js"
 JS_ROUTE_PATH = "/jax_stream_frontend/jax_stream.js"
+
+# ---------------------------------------------------------------------------
+# Prefetch ring buffer (Phase 1 of prefetch-window-restore)
+# ---------------------------------------------------------------------------
+# N future slots pre-downloaded. ring_size = N + 1 (N future + 1 current).
+DEFAULT_PREFETCH_COUNT = 3
+CONF_PREFETCH_COUNT = "prefetch_count"
+
+# Max total attempts per backfill task before giving up (avoids infinite retries
+# when Immich is down). Next kick (on next advance) will retry fresh.
+BACKFILL_RETRY_CAP = 6
+
+# JPEG SOI magic bytes used to validate slot files before promoting.
+JPEG_MAGIC = b"\xff\xd8\xff"
+
+# Phase 4 (past-window): past slots retained for reload-resilient back-nav.
+# M past frames are stored so a freshly-reloaded client can recover back-nav
+# history even after the in-memory blob cache is cleared.
+# ring_size = N + 1 + M (N future + 1 current + M past).
+DEFAULT_PAST_COUNT = 2
+CONF_PAST_COUNT = "past_count"
 
 # ---------------------------------------------------------------------------
 # Phase 4: VA view delivery constants (VIEW-01, D-07, D-08)

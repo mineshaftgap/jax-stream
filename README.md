@@ -35,7 +35,7 @@ Jax Stream is the "no extra container" middle ground: VA-native, per-device, no 
 - Rotating Immich photo background per VA device, default 1-minute interval (configurable per stream)
 - Native HA `image` entity plus `button`, `switch`, and `select` control entities per stream
 - `jax_stream` services: refresh, next, remove, set_rating, pause, resume -- callable from automations, scripts, the mobile app, and voice assistants
-- On-screen jaxmenu actions: swipe right to advance, swipe left for up-to-10 blob history back-nav; remove from album, star rating (1-5 + Unrate), pause toggle
+- On-screen actions: swipe left to advance, swipe right for up-to-10 blob history back-nav (photos slide to follow the finger); jaxmenu: remove from album, star rating (1-5 + Unrate), pause toggle
 - Dedicated auto-registered jax-stream VA view (blurred-fill letterbox, 70% text opacity)
 - Per-device per-stream targeting -- different albums on different displays
 - Integration-served frontend module -- no manual `frontend:` config needed
@@ -104,11 +104,11 @@ mobile app, and voice assistants:
 
 ## Usage
 
-Swipe **right** to advance to the next photo. Swipe **left** to go back to the
+Swipe **left** to advance to the next photo. Swipe **right** to go back to the
 previous photo, walking an in-memory blob history of up to 10 recently shown
-photos; swipe right from history moves forward again, and at the end of the
-history the queue resumes normally. Back-navigation is local to the device --
-it touches no server state.
+photos; swipe left from history moves forward again, and at the end of the
+history the queue resumes normally. Photos slide horizontally to follow the
+finger. Back-navigation is local to the device -- it touches no server state.
 
 To remove a photo from the album, open the jaxmenu (tap the jaxicon in the
 top-left corner) and select Remove. This calls `jax_stream.remove`, which
