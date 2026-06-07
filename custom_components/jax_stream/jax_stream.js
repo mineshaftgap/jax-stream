@@ -1270,7 +1270,7 @@
       "display:flex;align-items:center;justify-content:center;" +
       "z-index:99990;cursor:pointer;user-select:none;";
     var jaxImg = document.createElement("img");
-    jaxImg.src = "/local/jaxicon.svg?v=3";
+    jaxImg.src = "/jax_stream_frontend/jaxicon.svg";
     // Opacity is blueprint-driven via --jax-icon-opacity (emitted into
     // style.css by jax_stream_action.sh write_conf). Softens the stark white
     // jaxicon toward the lighter weight of the VA menu icons. Fallback 0.8

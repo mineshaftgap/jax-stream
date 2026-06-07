@@ -115,8 +115,10 @@ ROTATE_REGEN_POLL_S = 0.5
 # Must not start with /local (that is HA's www mount).
 # ASCII only -- no Unicode.
 # ---------------------------------------------------------------------------
-JS_FILENAME   = "jax_stream.js"
-JS_ROUTE_PATH = "/jax_stream_frontend/jax_stream.js"
+JS_FILENAME    = "jax_stream.js"
+JS_ROUTE_PATH  = "/jax_stream_frontend/jax_stream.js"
+SVG_FILENAME   = "jaxicon.svg"
+SVG_ROUTE_PATH = "/jax_stream_frontend/jaxicon.svg"
 
 # ---------------------------------------------------------------------------
 # Prefetch ring buffer (Phase 1 of prefetch-window-restore)

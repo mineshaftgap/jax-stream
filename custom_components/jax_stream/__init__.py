@@ -42,6 +42,8 @@ from .const import (
     DOMAIN,
     JS_FILENAME,
     JS_ROUTE_PATH,
+    SVG_FILENAME,
+    SVG_ROUTE_PATH,
     RETRY_CAP,
     SERVICE_NEXT,
     SERVICE_PAUSE,
@@ -232,6 +234,15 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     ])
 
     add_extra_js_url(hass, f"{JS_ROUTE_PATH}?v={content_hash}")
+
+    svg_path = str(Path(__file__).parent / SVG_FILENAME)
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(
+            url_path=SVG_ROUTE_PATH,
+            path=svg_path,
+            cache_headers=True,
+        )
+    ])
 
     # Prefetch ring buffer: serve <config>/jax_stream/ at /jax_stream_data/ so
     # tests can fetch slot files for content-equality proofs (DoD: assert new
