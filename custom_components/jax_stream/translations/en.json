@@ -8,11 +8,13 @@
           "url": "Immich URL",
           "api_key": "API key",
           "album_id": "Album ID",
+          "remove_to_album_id": "Recovery album ID (optional)",
           "interval": "Refresh interval (seconds)",
           "landscape_only": "Landscape only",
           "allow_insecure": "Allow insecure HTTPS"
         },
         "data_description": {
+          "remove_to_album_id": "Assets removed from the source album are added here first as a fail-safe before deletion. Requires albumAsset.create/delete and album.read scopes on the API key; asset.update is needed for ratings.",
           "allow_insecure": "Disable HTTPS certificate verification for a self-signed Immich. Leave off unless you understand the risk."
         }
       }
@@ -32,6 +34,8 @@
         "title": "Jax Stream options",
         "data": {
           "name": "Stream name",
+          "url": "Immich URL",
+          "api_key": "API key",
           "album_id": "Album ID",
           "remove_to_album_id": "Recovery album ID (optional)",
           "interval": "Refresh interval (seconds)",

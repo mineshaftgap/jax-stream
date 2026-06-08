@@ -11,7 +11,7 @@
  *
  * Reliability: a slightly DOWNWARD swipe was swallowed by the WebView's native
  * pull-to-refresh before reaching this code. The fix is overflow:hidden +
- * scrollTop=1 on html/body (SwipeRefreshLayout bypass -- see DEVEL.md).
+ * scrollTop=1 on html/body (SwipeRefreshLayout bypass -- see DEVEL/README.md).
  *
  * Tunables: window.JAX_SWIPE_CONFIG = { minDistance: 40, axisRatio: 1.0 };
  */
@@ -65,8 +65,6 @@
 
   var startX = 0, startY = 0, startT = 0, tracking = false, lastFire = 0;
   var ratingMenuOverlay = null;
-  var ratingPrefetchStream = null;
-  var ratingPrefetchTime   = 0;
   var lastPhotoSrc = null;
   // Photos are all served as the same overwrite-in-place file (random.jpg); a
   // past photo has no stable server URL. So back-nav caches the BYTES of each
@@ -77,11 +75,31 @@
   var histNavSuppress = false; // true for ONE checkPhotoChange cycle after nav injection
   var liveBlobUrl  = null;     // blob: URL of the photo currently live on screen
   var liveBlobSrc  = null;     // the computed bg string liveBlobUrl was captured from
+  var nextBlobUrl  = null;     // prefetched blob: URL of the next ring slot
+  var _nextPrefetchId = 0;     // generation counter; guards stale prefetch resolves
   var displayedAssetId = null; // Immich asset_id parsed from the live JPEG bytes
   var bgRoot       = null;     // cached shadow root hosting ha-card (showBg target)
   var nullSrcStreak = 0;      // consecutive checkPhotoChange ticks returning null src
   var pendingSlideDir = 0;    // swipe-set slide direction handed from fireSwipe to reloadStream
   var _serverHistoryLoaded = false;  // Phase 4: server past-window pre-load completed
+  // Live-drag gesture state. Created on touchmove, snapped or cancelled on touchend.
+  var gestureSuppressSlide = false; // when true, slidePhoto returns immediately (one-shot)
+  var carouselLeft   = null; // left panel (prev photo)
+  var carouselCenter = null; // center panel (current photo)
+  var carouselRight  = null; // right panel (next photo)
+  var gestureDirSign = 0;   // -1 = forward (left swipe), +1 = back (right swipe)
+  var gestureScreenW = 0;   // screen width captured at gesture start
+  var _carouselRaf   = 0;   // pending rAF id for touchmove drag writes
+  var _carouselCenterImg = null; // CSS bg-image of center panel (for __jaxLastSlide)
+  var _carouselLeftCss   = null; // CSS bg-image of left panel
+  var _carouselRightCss  = null; // CSS bg-image of right panel
+  var _prebuiltOv     = null; // carousel overlay built in onStart at opacity:0
+  var _prebuiltPanels = null; // {left, center, right} refs from pre-build
+  var _prebuiltCssData = null; // {leftBlobUrl, rightBlobUrl, centerImg, leftCss, rightCss}
+  var _warmOv      = null; // carousel overlay built post-swipe; GPU has full inter-swipe interval
+  var _warmPanels  = null; // {left, center, right} refs from warm build
+  var _warmCssData = null; // {leftBlobUrl, rightBlobUrl, centerImg, leftCss, rightCss}
+  var _warmTimer   = null; // pending setTimeout id for _buildWarmOv
 
   // Pause / suppress-auto-advance state. The server (jax_stream_action.sh) is
   // the source of truth via pause_manual.txt / pause_touch.txt; these mirror it
@@ -168,7 +186,7 @@
   // view AND kiosk applied. See inKiosk() for the reset-window rationale.
   function jaxReady() { return onClockView() && inKiosk(); }
 
-  // SwipeRefreshLayout bypass -- see DEVEL.md for the full explanation.
+  // SwipeRefreshLayout bypass -- see DEVEL/README.md for the full explanation.
   function setTouchAction(on) {
     try {
       var v = on ? "none" : "";
@@ -496,17 +514,50 @@
               if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
               var st = document.createElement("style");
               st.setAttribute("data-jax-refresh", "1");
-              st.textContent =
-                'ha-card::before, ha-card::after { background-image: url("' +
-                fresh + '") !important; }';
-              root.appendChild(st);
-              window.__jaxLastReload = { stream: stream, url: fresh, t: Date.now() };
-              if (slideDir && slideFrom) { slidePhoto(fresh, slideDir, slideFrom); slideDir = 0; }
-              (function (s) {
-                setTimeout(function () {
-                  if (s && s.parentNode) s.parentNode.removeChild(s);
-                }, 65000);
-              })(st);
+              var _stContent = 'ha-card::before, ha-card::after { background-image: url("' + fresh + '") !important; }';
+              if (window.__jaxGesturePendingClear && slideOverlay) {
+                // Path 3 gesture teardown: old CSS removed above (opaque overlay
+                // covers the bare ha-card). Preload fresh URL via Image() so the
+                // ha-card has a decoded texture the instant the style tag is
+                // appended; 2 rAFs then let the compositor upload it before fade.
+                window.__jaxGesturePendingClear = false;
+                if (slideTimer) { clearTimeout(slideTimer); slideTimer = null; }
+                if (slideDir && slideFrom) { slidePhoto(fresh, slideDir, slideFrom); slideDir = 0; }
+                (function(_st, _content, _root, _fresh, _ov) {
+                  var _img = new Image();
+                  _img.onload = _img.onerror = function() {
+                    _st.textContent = _content;
+                    _root.appendChild(_st);
+                    window.__jaxLastReload = { stream: stream, url: _fresh, t: Date.now() };
+                    (function(s) {
+                      setTimeout(function() { if (s && s.parentNode) s.parentNode.removeChild(s); }, 65000);
+                    })(_st);
+                    requestAnimationFrame(function() {
+                      requestAnimationFrame(function() {
+                        if (_ov && _ov.parentNode) { _ov.style.transition = "opacity 80ms linear"; _ov.style.opacity = "0"; }
+                        slideTimer = setTimeout(function() {
+                          if (slideOverlay === _ov) slideOverlay = null;
+                          if (_ov && _ov.parentNode) _ov.parentNode.removeChild(_ov);
+                          slideTimer = null;
+                          _scheduleWarmBuild(500);
+                        }, 100);
+                        gestureSuppressSlide = false;
+                      });
+                    });
+                  };
+                  _img.src = _fresh;
+                })(st, _stContent, root, fresh, slideOverlay);
+              } else {
+                st.textContent = _stContent;
+                root.appendChild(st);
+                window.__jaxLastReload = { stream: stream, url: fresh, t: Date.now() };
+                if (slideDir && slideFrom) { slidePhoto(fresh, slideDir, slideFrom); slideDir = 0; }
+                (function (s) {
+                  setTimeout(function () {
+                    if (s && s.parentNode) s.parentNode.removeChild(s);
+                  }, 65000);
+                })(st);
+              }
             }
           }
         }
@@ -651,15 +702,50 @@
           // Replace any earlier live blob that was never pushed to history.
           if (liveBlobUrl) URL.revokeObjectURL(liveBlobUrl);
           liveBlobUrl = u;
+          prewarmBlobUrl(u);
           displayedAssetId = neighbors.self;
           window.__jaxLiveBlobUrl = u;
           window.__jaxDisplayedAssetId = neighbors.self;
           window.__jaxNeighbors = neighbors;
+          var _sm = STREAM_RE.exec(src);
+          if (_sm) prefetchNext(_sm[1]);
         } else {
           URL.revokeObjectURL(u);  // a newer photo superseded this capture
         }
       })
       .catch(function () {});
+  }
+
+  // Fetch the coordinator's next ring-buffer slot and cache it as nextBlobUrl
+  // so the gesture overlay can show a real incoming photo immediately.
+  // Called from captureLive after each new photo lands on screen.
+  function prefetchNext(stream) {
+    var myId = ++_nextPrefetchId;
+    fetch('/jax_stream_data/' + stream + '/state.json?v=' + Date.now(), { credentials: 'include' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(state) {
+        if (myId !== _nextPrefetchId) return null;
+        if (!state || typeof state.head !== 'number' || !state.slots) return null;
+        var slotKeys = Object.keys(state.slots);
+        var ringSize = slotKeys.length;
+        if (!ringSize) return null;
+        var nextIdx = (state.head + 1) % ringSize;
+        var padded = nextIdx < 10 ? '0' + nextIdx : '' + nextIdx;
+        return fetch('/jax_stream_data/' + stream + '/window/slot_' + padded + '.jpg?v=' + Date.now(), { credentials: 'include' })
+          .then(function(r) { return r.ok ? r.arrayBuffer() : null; });
+      })
+      .then(function(ab) {
+        if (!ab || myId !== _nextPrefetchId) return;
+        var bytes = new Uint8Array(ab);
+        if (bytes[0] !== 0xFF || bytes[1] !== 0xD8 || bytes[2] !== 0xFF) return;
+        var b = new Blob([ab], { type: 'image/jpeg' });
+        var u = URL.createObjectURL(b);
+        if (nextBlobUrl) URL.revokeObjectURL(nextBlobUrl);
+        nextBlobUrl = u;
+        window.__jaxNextBlobUrl = u;
+        _scheduleWarmBuild(500);
+      })
+      .catch(function() {});
   }
 
   // Paint a cached blob: URL as the background. blobUrl is immutable so no
@@ -696,10 +782,12 @@
 
   function clearSlide() {
     if (slideTimer) { clearTimeout(slideTimer); slideTimer = null; }
+    var wasGesture = slideOverlay && slideOverlay.getAttribute("data-jax-gesture") === "1";
     if (slideOverlay && slideOverlay.parentNode) {
       slideOverlay.parentNode.removeChild(slideOverlay);
     }
     slideOverlay = null;
+    if (wasGesture) _scheduleWarmBuild(500);
   }
 
   // Find the ha-card whose ::after/::before paints the photo and return its
@@ -736,8 +824,45 @@
     return null;
   }
 
+  // Build one slide panel containing a blur-fill layer (matching ha-card::before)
+  // Pre-decode a blob URL into Chrome's image decode cache so that when carousel
+  // panels later use it as background-image the GPU texture upload is fast (~1 frame
+  // instead of ~7). Called immediately when a blob URL is stored, while idle.
+  function prewarmBlobUrl(blobUrl) {
+    if (!blobUrl || !window.Image) return;
+    var img = new Image();
+    img.src = blobUrl;
+    if (img.decode) img.decode();
+  }
+
+  // and a sharp layer (matching ha-card::after). cssImage is a CSS background-image
+  // value (e.g. 'url("blob:...")') or null for a dark placeholder panel.
+  function buildGesturePanel(cssImage, card) {
+    var wrap = document.createElement("div");
+    wrap.style.cssText =
+      "position:absolute;top:0;left:0;width:100%;height:100%;" +
+      "background:black;overflow:hidden;";
+    var blrCss =
+      "position:absolute;inset:0;background-size:cover;background-position:center;" +
+      "background-repeat:no-repeat;filter:blur(30px);transform:scale(1.1);pointer-events:none;";
+    if (cssImage) blrCss += "background-image:" + cssImage + ";";
+    var blr = document.createElement("div");
+    blr.style.cssText = blrCss;
+    var sharpCss =
+      "position:absolute;inset:0;background-repeat:no-repeat;pointer-events:none;" +
+      "background-size:" + (card ? card.size : "contain") + ";" +
+      "background-position:" + (card ? card.position : "center") + ";";
+    if (cssImage) sharpCss += "background-image:" + cssImage + ";";
+    var sharp = document.createElement("div");
+    sharp.style.cssText = sharpCss;
+    wrap.appendChild(blr);
+    wrap.appendChild(sharp);
+    return wrap;
+  }
+
   function slidePhoto(newUrl, dirSign, fromCard) {
     try {
+      if (gestureSuppressSlide) { gestureSuppressSlide = false; return false; }
       if (!newUrl || !dirSign) return false;
       // fromCard is the OUTGOING photo captured by the caller BEFORE it swapped
       // the real bg (the injected !important style would otherwise make us read
@@ -749,11 +874,11 @@
       var ov = document.createElement("div");
       ov.setAttribute("data-jax-slide", "1");
       ov.style.cssText =
-        "position:fixed;inset:0;z-index:9000;overflow:hidden;pointer-events:none;";
+        "position:fixed;inset:0;z-index:9000;overflow:hidden;pointer-events:none;background:#1c1c1c;";
       var common =
         "position:absolute;top:0;left:0;width:100%;height:100%;" +
         "background-repeat:no-repeat;background-size:" + card.size + ";" +
-        "background-position:" + card.position + ";will-change:transform;";
+        "background-position:" + card.position + ";";
       var outg = document.createElement("div");
       outg.style.cssText = common +
         "background-image:" + card.image + ";transform:translateX(0);";
@@ -780,13 +905,28 @@
       function startAnim() {
         if (started || ov !== slideOverlay) return;
         started = true;
+        // Promote to GPU layer now (after initial paint) so the outgoing panel
+        // texture is already uploaded before compositing starts -- avoids the
+        // 1-frame black flash from an uninitialized compositor layer.
+        outg.style.willChange = "transform";
+        inc.style.willChange  = "transform";
         // Force layout so the initial transform is committed before transition.
         void ov.offsetWidth;
         outg.style.transition = "transform " + dur + "ms " + ease;
         inc.style.transition  = "transform " + dur + "ms " + ease;
         outg.style.transform = "translateX(" + (dirSign > 0 ? "-100%" : "100%") + ")";
         inc.style.transform  = "translateX(0)";
-        slideTimer = setTimeout(clearSlide, dur + 250);
+        // Drop will-change then fade out instead of instant removeChild: the
+        // ha-card behind the overlay paints cleanly during the fade, so the
+        // final DOM removal is invisible and avoids a progressive-repaint sweep.
+        slideTimer = setTimeout(function() {
+          if (ov !== slideOverlay) return;
+          outg.style.willChange = "";
+          inc.style.willChange  = "";
+          ov.style.transition = "opacity 80ms linear";
+          ov.style.opacity = "0";
+          slideTimer = setTimeout(function() { if (slideOverlay === ov) clearSlide(); }, 100);
+        }, dur + 50);
       }
       // Warm the incoming image so it paints in sync with the slide; fall back
       // to animating anyway if the load stalls (LAN fetch is usually instant).
@@ -804,6 +944,7 @@
 
   // Append to history, evicting + revoking the oldest blob past the cap of 10.
   function pushHistory(blobUrl, stream) {
+    prewarmBlobUrl(blobUrl);
     photoHistory.push({ blobUrl: blobUrl, stream: stream, assetId: displayedAssetId });
     if (photoHistory.length > 10) {
       var ev = photoHistory.shift();
@@ -852,6 +993,7 @@
                   var assetId = (neighbors && neighbors.self) || null;
                   var b = new Blob([bytes], { type: 'image/jpeg' });
                   var blobUrl = URL.createObjectURL(b);
+                  prewarmBlobUrl(blobUrl);
                   photoHistory.push({ blobUrl: blobUrl, stream: stream, assetId: assetId });
                   if (photoHistory.length > 10) {
                     var ev = photoHistory.shift();
@@ -871,7 +1013,6 @@
     historyPos = historyEntryPos; histNavSuppress = true;
     window.__jaxHistoryPos = historyPos;
     window.__jaxLastBack = { pos: historyPos, url: photoHistory[historyPos].blobUrl, t: Date.now() };
-    showStatus("Back", "#5599ff");
     // Going to a previous photo: it enters from the LEFT (dirSign -1).
     showBg(photoHistory[historyPos].blobUrl, stream, -1);
   }
@@ -910,10 +1051,9 @@
   function fireSwipe(direction, stream, slideDir) {
     var hass = getHass();
     if (!hass) return;
-    var dismiss = showStatus(
-      direction === "left" ? "Removing" : "Next",
-      direction === "left" ? "#ff5555" : "#55dd55"
-    );
+    var dismiss = direction === "left"
+      ? showStatus("Removing", "#ff5555")
+      : function() {};
     var delay = typeof CFG.refreshDelayMs === "number" ? CFG.refreshDelayMs : 3000;
     // __jaxLastSwipe is recorded by onEnd (the gesture owner) so it survives every
     // swipe path, including history nav. Don't clobber it here.
@@ -929,10 +1069,7 @@
         reloadStream(stream);
         setTimeout(dismiss, 800);
         // Fire prefetch directly on swipe; checkPhotoChange covers organic advances.
-        ratingPrefetchStream = stream;
-        ratingPrefetchTime   = Date.now();
-        window.__jaxRatingPrefetch = { stream: stream, t: ratingPrefetchTime };
-        // rate_menu prefetch removed: coordinator writes rate_current.txt on every advance (D-11).
+        // coordinator writes rate_current.txt on every advance (D-11).
       }, delay);
     }).catch(function (err) {
       dismiss();
@@ -947,6 +1084,66 @@
     return e;
   }
 
+  function _discardPrebuilt() {
+    if (_prebuiltOv && _prebuiltOv.parentNode) {
+      _prebuiltOv.parentNode.removeChild(_prebuiltOv);
+    }
+    _prebuiltOv = null; _prebuiltPanels = null; _prebuiltCssData = null;
+  }
+
+  function _discardWarm() {
+    if (_warmTimer) { clearTimeout(_warmTimer); _warmTimer = null; }
+    if (_warmOv && _warmOv.parentNode) {
+      _warmOv.parentNode.removeChild(_warmOv);
+    }
+    _warmOv = null; _warmPanels = null; _warmCssData = null;
+  }
+
+  function _scheduleWarmBuild(delayMs) {
+    if (_warmTimer) { clearTimeout(_warmTimer); _warmTimer = null; }
+    _warmTimer = setTimeout(function() { _warmTimer = null; _buildWarmOv(); }, delayMs);
+  }
+
+  function _buildWarmOv() {
+    _discardWarm();
+    var stream = currentStream();
+    if (!stream) return;
+    var card = findCardBg();
+    if (!card) return;
+    var leftBlobUrl = null;
+    if (historyPos > 0) {
+      leftBlobUrl = photoHistory[historyPos - 1].blobUrl;
+    } else if (historyPos < 0 && photoHistory.length >= 1) {
+      leftBlobUrl = photoHistory[photoHistory.length - 1].blobUrl;
+    }
+    var rightBlobUrl = null;
+    if (historyPos >= 0 && historyPos + 1 < photoHistory.length) {
+      rightBlobUrl = photoHistory[historyPos + 1].blobUrl;
+    } else if (historyPos < 0) {
+      rightBlobUrl = nextBlobUrl;
+    }
+    if (!leftBlobUrl && !rightBlobUrl) return;
+    var host = document.body || document.documentElement;
+    var ov = document.createElement("div");
+    ov.setAttribute("data-jax-slide", "1");
+    ov.setAttribute("data-jax-warm", "1");
+    ov.style.cssText = "position:fixed;inset:0;z-index:8999;overflow:hidden;pointer-events:none;background:#1c1c1c;opacity:0;";
+    var centerImg = liveBlobUrl ? 'url("' + liveBlobUrl + '")' : card.image;
+    var leftCss   = leftBlobUrl  ? 'url("' + leftBlobUrl  + '")' : null;
+    var rightCss  = rightBlobUrl ? 'url("' + rightBlobUrl + '")' : null;
+    var pLeft   = buildGesturePanel(leftCss,   card);
+    var pCenter = buildGesturePanel(centerImg,  card);
+    var pRight  = buildGesturePanel(rightCss,   card);
+    ov.appendChild(pLeft);
+    ov.appendChild(pCenter);
+    ov.appendChild(pRight);
+    host.appendChild(ov);
+    _warmOv      = ov;
+    _warmPanels  = { left: pLeft, center: pCenter, right: pRight };
+    _warmCssData = { leftBlobUrl: leftBlobUrl, rightBlobUrl: rightBlobUrl,
+                     centerImg: centerImg, leftCss: leftCss, rightCss: rightCss };
+  }
+
   function onStart(e) {
     if (e.touches && e.touches.length > 1) { tracking = false; return; }
     if (!jaxReady()) { tracking = false; return; }
@@ -954,18 +1151,195 @@
     var p = pointOf(e);
     startX = p.clientX; startY = p.clientY; startT = Date.now();
     tracking = true;
+    if (_carouselRaf) { cancelAnimationFrame(_carouselRaf); _carouselRaf = 0; }
+    _discardPrebuilt();
+    carouselLeft = null; carouselCenter = null; carouselRight = null;
+    gestureDirSign = 0; gestureScreenW = 0;
     showHint();
+    // Pre-build carousel at opacity:0 so the GPU has the gesture-recognition
+    // window (~100-200ms before first qualifying onMove) to upload blob textures.
+    // When onMove confirms horizontal intent it flips opacity to 1 instantly.
+    var stream = currentStream();
+    if (!stream) return;
+    var card = findCardBg();
+    if (!card) return;
+    var leftBlobUrl = null;
+    if (historyPos > 0) {
+      leftBlobUrl = photoHistory[historyPos - 1].blobUrl;
+    } else if (historyPos < 0 && photoHistory.length >= 1) {
+      leftBlobUrl = photoHistory[photoHistory.length - 1].blobUrl;
+    }
+    var rightBlobUrl = null;
+    if (historyPos >= 0 && historyPos + 1 < photoHistory.length) {
+      rightBlobUrl = photoHistory[historyPos + 1].blobUrl;
+    } else if (historyPos < 0) {
+      rightBlobUrl = nextBlobUrl;
+    }
+    if (!leftBlobUrl && !rightBlobUrl) return;
+    var host = document.body || document.documentElement;
+    var ov = document.createElement("div");
+    ov.setAttribute("data-jax-slide", "1");
+    ov.setAttribute("data-jax-gesture", "1");
+    ov.style.cssText = "position:fixed;inset:0;z-index:9000;overflow:hidden;pointer-events:none;background:#1c1c1c;opacity:0;";
+    var centerImg = liveBlobUrl ? 'url("' + liveBlobUrl + '")' : card.image;
+    var leftCss   = leftBlobUrl  ? 'url("' + leftBlobUrl  + '")' : null;
+    var rightCss  = rightBlobUrl ? 'url("' + rightBlobUrl + '")' : null;
+    var pLeft   = buildGesturePanel(leftCss,   card);
+    var pCenter = buildGesturePanel(centerImg,  card);
+    var pRight  = buildGesturePanel(rightCss,   card);
+    ov.appendChild(pLeft);
+    ov.appendChild(pCenter);
+    ov.appendChild(pRight);
+    host.appendChild(ov);
+    _prebuiltOv = ov;
+    _prebuiltPanels = { left: pLeft, center: pCenter, right: pRight };
+    _prebuiltCssData = { leftBlobUrl: leftBlobUrl, rightBlobUrl: rightBlobUrl,
+                         centerImg: centerImg, leftCss: leftCss, rightCss: rightCss };
   }
 
   function onMove(e) {
     if (!tracking) return;
     if (e.cancelable) e.preventDefault();
+
+    var p = pointOf(e);
+    var dx = Math.round(p.clientX - startX);
+    var dy = Math.round(p.clientY - startY);
+    var adx = Math.abs(dx), ady = Math.abs(dy);
+
+    // Wait for clear horizontal intent before building overlay
+    if (adx < 10 || adx < ady * 1.5) return;
+
+    var stream = currentStream();
+    if (!stream) return;
+
+    if (!carouselCenter) {
+      clearSlide();
+      gestureDirSign = dx > 0 ? 1 : -1;
+      gestureScreenW = window.innerWidth || 360;
+      var W = gestureScreenW;
+
+      // Resolve the incoming blob for the swipe direction.
+      var leftBlobUrl = null;
+      if (historyPos > 0) {
+        leftBlobUrl = photoHistory[historyPos - 1].blobUrl;
+      } else if (historyPos < 0 && photoHistory.length >= 1) {
+        leftBlobUrl = photoHistory[photoHistory.length - 1].blobUrl;
+      }
+      var rightBlobUrl = null;
+      if (historyPos >= 0 && historyPos + 1 < photoHistory.length) {
+        rightBlobUrl = photoHistory[historyPos + 1].blobUrl;
+      } else if (historyPos < 0) {
+        rightBlobUrl = nextBlobUrl;
+      }
+
+      // Only build the carousel when the incoming panel has real content.
+      // Without it the incoming panel is solid black; fall through to direct
+      // nav in onEnd, which uses the slidePhoto animation path instead.
+      var incomingBlob = gestureDirSign < 0 ? rightBlobUrl : leftBlobUrl;
+      if (!incomingBlob) { _discardPrebuilt(); _discardWarm(); return; }
+
+      var ov, pLeft, pCenter, pRight, centerImg, leftCss, rightCss;
+
+      // Prefer the warm overlay (GPU had the full inter-swipe interval to upload
+      // textures). Fall back to the onStart prebuilt (GPU had ~100-200ms).
+      var wb = _warmCssData;
+      if (_warmOv && _warmOv.parentNode && wb &&
+          wb.leftBlobUrl === leftBlobUrl && wb.rightBlobUrl === rightBlobUrl) {
+        ov = _warmOv;
+        pLeft   = _warmPanels.left;
+        pCenter = _warmPanels.center;
+        pRight  = _warmPanels.right;
+        centerImg = wb.centerImg;
+        leftCss   = wb.leftCss;
+        rightCss  = wb.rightCss;
+        _warmOv = null; _warmPanels = null; _warmCssData = null;
+        _discardPrebuilt();
+        ov.style.opacity = "1";
+      } else {
+        var pb = _prebuiltCssData;
+        if (_prebuiltOv && _prebuiltOv.parentNode && pb &&
+            pb.leftBlobUrl === leftBlobUrl && pb.rightBlobUrl === rightBlobUrl) {
+          ov = _prebuiltOv;
+          pLeft   = _prebuiltPanels.left;
+          pCenter = _prebuiltPanels.center;
+          pRight  = _prebuiltPanels.right;
+          centerImg = pb.centerImg;
+          leftCss   = pb.leftCss;
+          rightCss  = pb.rightCss;
+          _prebuiltOv = null; _prebuiltPanels = null; _prebuiltCssData = null;
+          ov.style.opacity = "1";
+        } else {
+          _discardPrebuilt(); _discardWarm();
+        var card = findCardBg();
+        if (!card) return;
+        var host = document.body || document.documentElement;
+        ov = document.createElement("div");
+        ov.setAttribute("data-jax-slide", "1");
+        ov.setAttribute("data-jax-gesture", "1");
+        ov.style.cssText = "position:fixed;inset:0;z-index:9000;overflow:hidden;pointer-events:none;background:#1c1c1c;";
+        centerImg = liveBlobUrl ? 'url("' + liveBlobUrl + '")' : card.image;
+        leftCss   = leftBlobUrl  ? 'url("' + leftBlobUrl  + '")' : null;
+        rightCss  = rightBlobUrl ? 'url("' + rightBlobUrl + '")' : null;
+        pLeft   = buildGesturePanel(leftCss,   card);
+        pCenter = buildGesturePanel(centerImg,  card);
+        pRight  = buildGesturePanel(rightCss,   card);
+        ov.appendChild(pLeft);
+        ov.appendChild(pCenter);
+        ov.appendChild(pRight);
+        host.appendChild(ov);
+        }
+      }
+
+      slideOverlay = ov;
+      carouselLeft   = pLeft;
+      carouselCenter = pCenter;
+      carouselRight  = pRight;
+      _carouselCenterImg = centerImg;
+      _carouselLeftCss   = leftCss;
+      _carouselRightCss  = rightCss;
+    }
+
+    // Track finger: no transition during drag
+    var W = gestureScreenW;
+    carouselLeft.style.transition   = "";
+    carouselCenter.style.transition = "";
+    carouselRight.style.transition  = "";
+    carouselLeft.style.transform   = "translateX(" + (dx - W) + "px)";
+    carouselCenter.style.transform = "translateX(" + dx + "px)";
+    carouselRight.style.transform  = "translateX(" + (dx + W) + "px)";
   }
 
   function onCancel(e) {
     if (!tracking) return;
     tracking = false;
     hideHint();
+    if (_carouselRaf) { cancelAnimationFrame(_carouselRaf); _carouselRaf = 0; }
+    if (!carouselCenter) { _discardPrebuilt(); _discardWarm(); return; }
+    if (carouselCenter) {
+      var W = gestureScreenW;
+      var dur = 220;
+      var tr = "transform " + dur + "ms cubic-bezier(.4,0,.6,1)";
+      void carouselLeft.offsetWidth;
+      carouselLeft.style.willChange   = "transform";
+      carouselCenter.style.willChange = "transform";
+      carouselRight.style.willChange  = "transform";
+      carouselLeft.style.transition   = tr;
+      carouselCenter.style.transition = tr;
+      carouselRight.style.transition  = tr;
+      carouselLeft.style.transform   = "translateX(" + (-W) + "px)";
+      carouselCenter.style.transform = "translateX(0)";
+      carouselRight.style.transform  = "translateX(" + W + "px)";
+      var cl = carouselLeft, cc = carouselCenter, cr = carouselRight;
+      cc.addEventListener("transitionend", function() {
+        cl.style.willChange = ""; cc.style.willChange = ""; cr.style.willChange = "";
+      }, { once: true });
+      carouselLeft = null; carouselCenter = null; carouselRight = null;
+      gestureDirSign = 0; gestureScreenW = 0;
+      slideTimer = setTimeout(function() {
+        if (slideOverlay) { slideOverlay.style.transition = "opacity 80ms linear"; slideOverlay.style.opacity = "0"; }
+        slideTimer = setTimeout(clearSlide, 100);
+      }, dur + 50);
+    }
   }
 
   function onEnd(e) {
@@ -984,7 +1358,129 @@
     var stream = currentStream();
     if (stream) armTouchWindow(stream);
 
-    // Horizontal path: swipe advance / remove.
+    // If a live-drag gesture overlay is active, drive it to completion or back.
+    if (_carouselRaf) { cancelAnimationFrame(_carouselRaf); _carouselRaf = 0; }
+    if (carouselCenter) {
+      var thresholdMet = adx >= CFG.minDistance && dt <= CFG.maxDuration &&
+          adx >= ady * CFG.axisRatio;
+      var cooldownOk = (Date.now() - lastFire) >= CFG.cooldownMs;
+      var doComplete = thresholdMet && cooldownOk && stream;
+
+      var snapDur  = doComplete ? 180 : 220;
+      var snapEase = doComplete ? "cubic-bezier(.2,.8,.4,1)" : "cubic-bezier(.4,0,.6,1)";
+      var W = gestureScreenW;
+      var tr = "transform " + snapDur + "ms " + snapEase;
+      void carouselLeft.offsetWidth;
+      carouselLeft.style.willChange   = "transform";
+      carouselCenter.style.willChange = "transform";
+      carouselRight.style.willChange  = "transform";
+      carouselLeft.style.transition   = tr;
+      carouselCenter.style.transition = tr;
+      carouselRight.style.transition  = tr;
+
+      var cl = carouselLeft, cc = carouselCenter, cr = carouselRight;
+      cc.addEventListener("transitionend", function() {
+        cl.style.willChange = ""; cc.style.willChange = ""; cr.style.willChange = "";
+      }, { once: true });
+
+      if (doComplete) {
+        if (gestureDirSign < 0) {
+          // Forward swipe: all shift left, right panel lands at center
+          carouselLeft.style.transform   = "translateX(" + (-2 * W) + "px)";
+          carouselCenter.style.transform = "translateX(" + (-W) + "px)";
+          carouselRight.style.transform  = "translateX(0)";
+        } else {
+          // Back swipe: all shift right, left panel lands at center
+          carouselLeft.style.transform   = "translateX(0)";
+          carouselCenter.style.transform = "translateX(" + W + "px)";
+          carouselRight.style.transform  = "translateX(" + (2 * W) + "px)";
+        }
+
+        var swipeDir = gestureDirSign < 0 ? "left" : "right";
+        var action   = gestureDirSign < 0 ? "next" : "prev";
+        lastFire = Date.now();
+        window.__jaxLastSwipe = { finger: swipeDir, action: action, stream: stream, t: lastFire };
+        window.__jaxLastSlide = {
+          dir: gestureDirSign < 0 ? 1 : -1,
+          out: (_carouselCenterImg || '').slice(0, 48),
+          inc: (gestureDirSign < 0 ? (_carouselRightCss || '') : (_carouselLeftCss || '')).slice(0, 48),
+          t: lastFire
+        };
+        if (e.stopPropagation) e.stopPropagation();
+        if (paused) autoUnpause(stream);
+
+        var capturedDir = gestureDirSign;
+        carouselLeft = null; carouselCenter = null; carouselRight = null;
+        gestureDirSign = 0; gestureScreenW = 0;
+
+        setTimeout(function() {
+          gestureSuppressSlide = true;
+          if (capturedDir > 0) {
+            navBack(stream);
+            // Wait 2 rAFs after CSS injection so ha-card GPU texture is ready
+            // before the fade starts; avoids dark-reveal during teardown (Flash 2).
+            (function(_ov) {
+              requestAnimationFrame(function() {
+                requestAnimationFrame(function() {
+                  if (_ov && _ov.parentNode) { _ov.style.transition = "opacity 80ms linear"; _ov.style.opacity = "0"; }
+                  // Close over _ov to avoid removing a new swipe's carousel if it
+                  // was built before this timer fires (race condition).
+                  slideTimer = setTimeout(function() {
+                    if (slideOverlay === _ov) slideOverlay = null;
+                    if (_ov && _ov.parentNode) _ov.parentNode.removeChild(_ov);
+                    slideTimer = null;
+                    _scheduleWarmBuild(500);
+                  }, 100);
+                  gestureSuppressSlide = false;
+                });
+              });
+            })(slideOverlay);
+          } else if (historyPos >= 0 && historyPos + 1 < photoHistory.length) {
+            navForward(stream);
+            (function(_ov) {
+              requestAnimationFrame(function() {
+                requestAnimationFrame(function() {
+                  if (_ov && _ov.parentNode) { _ov.style.transition = "opacity 80ms linear"; _ov.style.opacity = "0"; }
+                  slideTimer = setTimeout(function() {
+                    if (slideOverlay === _ov) slideOverlay = null;
+                    if (_ov && _ov.parentNode) _ov.parentNode.removeChild(_ov);
+                    slideTimer = null;
+                    _scheduleWarmBuild(500);
+                  }, 100);
+                  gestureSuppressSlide = false;
+                });
+              });
+            })(slideOverlay);
+          } else {
+            nextBlobUrl = null; // consumed; new prefetch fires after next photo lands
+            window.__jaxGesturePendingClear = true;
+            navForward(stream);
+            // Safety fallback only -- reloadStream handles teardown via
+            // __jaxGesturePendingClear when the new URL lands. Must be long
+            // enough that reloadStream always wins (server + coordinator +
+            // fetch is typically 1-3s; 8s gives wide margin).
+            slideTimer = setTimeout(function() {
+              window.__jaxGesturePendingClear = false;
+              gestureSuppressSlide = false;
+              if (slideOverlay) { slideOverlay.style.transition = "opacity 80ms linear"; slideOverlay.style.opacity = "0"; }
+              slideTimer = setTimeout(clearSlide, 100);
+            }, 8000);
+          }
+        }, snapDur + 20);
+      } else {
+        // Snap back to rest positions
+        carouselLeft.style.transform   = "translateX(" + (-W) + "px)";
+        carouselCenter.style.transform = "translateX(0)";
+        carouselRight.style.transform  = "translateX(" + W + "px)";
+        carouselLeft = null; carouselCenter = null; carouselRight = null;
+        gestureDirSign = 0; gestureScreenW = 0;
+        slideTimer = setTimeout(clearSlide, snapDur + 50);
+      }
+      return;
+    }
+
+    // No gesture overlay (very fast swipe, no touchmove): fall through to direct nav.
+    _discardPrebuilt(); _discardWarm();
     if (adx < CFG.minDistance) return;
     if (dt > CFG.maxDuration) return;
     if (adx < ady * CFG.axisRatio) return;
@@ -995,11 +1491,6 @@
 
     lastFire = now;
     if (e.stopPropagation) e.stopPropagation();
-    // Standard carousel convention so the photo follows the finger: swipe LEFT
-    // advances to the NEXT photo (new enters from the right), swipe RIGHT goes
-    // to the PREVIOUS photo (old returns from the left). This is the reverse of
-    // the pre-slide mapping; the directional slide makes the old mapping feel
-    // backwards. The slide itself is wired in navForward/navBack.
     var dir = dx < 0 ? "left" : "right";
     var action = dir === "left" ? "next" : "prev";
     window.__jaxLastSwipe = { finger: dir, action: action, stream: stream, t: now };
@@ -1008,8 +1499,6 @@
     } else {
       navBack(stream);
     }
-    // A deliberate swipe auto-unpauses (clears the manual hold); the touch
-    // window armed above keeps the landed photo for 90s.
     if (paused) autoUnpause(stream);
   }
 
@@ -1421,24 +1910,15 @@
           var ratingAssetId = (historyPos >= 0 && photoHistory[historyPos])
             ? photoHistory[historyPos].assetId
             : displayedAssetId;
-          var prefetchAge = Date.now() - ratingPrefetchTime;
-          var prefetchFresh = ratingPrefetchStream === s && prefetchAge < 60000;
-          // rate_menu prefetch removed: coordinator writes rate_current.txt on every advance (D-11).
-          // prefetchFresh still controls waitMs below (D-15).
-          // If a prefetch fired on advance, rate_current.txt should already be
-          // written; wait out only whatever time remains of the 2.2s budget.
-          var waitMs = prefetchFresh ? Math.max(0, 2200 - prefetchAge) : 2000;
-          window.__jaxRatingWaitMs = { waitMs: waitMs, prefetchFresh: prefetchFresh, prefetchAge: prefetchAge };
-          setTimeout(function() {
-            fetch("/view_assist/images/jax-stream/" + s + "/rate_current.txt?v=" + Date.now())
-              .then(function(r) { return r.ok ? r.text() : "0"; })
-              .then(function(ratingStr) {
-                var cur = parseInt(ratingStr.trim(), 10);
-                if (isNaN(cur) || cur < 0 || cur > 5) cur = 0;
-                openRatingMenu(s, cur, ratingAssetId);
-              })
-              .catch(function() { openRatingMenu(s, 0, ratingAssetId); });
-          }, waitMs);
+          // coordinator writes rate_current.txt on every advance (D-11) -- fetch immediately.
+          fetch("/view_assist/images/jax-stream/" + s + "/rate_current.txt?v=" + Date.now())
+            .then(function(r) { return r.ok ? r.text() : "0"; })
+            .then(function(ratingStr) {
+              var cur = parseInt(ratingStr.trim(), 10);
+              if (isNaN(cur) || cur < 0 || cur > 5) cur = 0;
+              openRatingMenu(s, cur, ratingAssetId);
+            })
+            .catch(function() { openRatingMenu(s, 0, ratingAssetId); });
         }
       },
       { svg: ROTCCW_SVG, onTap: makeRotate(270) },
@@ -1543,14 +2023,6 @@
         if (confirmOverlay && confirmOverlay.parentNode) { confirmOverlay.parentNode.removeChild(confirmOverlay); confirmOverlay = null; }
         if (ratingMenuOverlay && ratingMenuOverlay.parentNode) { ratingMenuOverlay.parentNode.removeChild(ratingMenuOverlay); ratingMenuOverlay = null; }
       }
-      if (wasLive) {
-        var stream = currentStream(); var hass = getHass();
-        if (stream && hass) {
-          ratingPrefetchStream = stream; ratingPrefetchTime = Date.now();
-          window.__jaxRatingPrefetch = { stream: stream, t: ratingPrefetchTime };
-          // rate_menu prefetch removed: coordinator writes rate_current.txt on every advance (D-11).
-        }
-      }
     }
     lastPhotoSrc = src;
     // Cache the bytes of whatever photo is now live (no-op if already captured).
@@ -1645,7 +2117,11 @@
     if (jaxMenuTrigger && jaxMenuTrigger.parentNode) { jaxMenuTrigger.parentNode.removeChild(jaxMenuTrigger); jaxMenuTrigger = null; }
     if (pauseIndicator && pauseIndicator.parentNode) { pauseIndicator.parentNode.removeChild(pauseIndicator); pauseIndicator = null; }
     if (touchRingTimer) { clearInterval(touchRingTimer); touchRingTimer = null; }
-    clearSlide(); pendingSlideDir = 0;
+    clearSlide(); _discardWarm(); pendingSlideDir = 0;
+    if (_carouselRaf) { cancelAnimationFrame(_carouselRaf); _carouselRaf = 0; }
+    carouselLeft = null; carouselCenter = null; carouselRight = null;
+    gestureDirSign = 0; gestureScreenW = 0;
+    gestureSuppressSlide = false; window.__jaxGesturePendingClear = false;
     if (touchIndicator && touchIndicator.parentNode) { touchIndicator.parentNode.removeChild(touchIndicator); touchIndicator = null; }
     touchDeadline = 0; touchDismissed = null; lastTouchDismissAt = 0;
     paused = false; lastTouchArm = 0;

@@ -44,106 +44,93 @@ from .immich import ImmichAuthError, ImmichClient, ImmichConnError
 _LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Form schemas
+# Shared field builders (used by both config and options schemas)
 # ---------------------------------------------------------------------------
 
-# Full schema for the initial config step (all seven D-06 fields).
-CONFIG_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_NAME): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.TEXT)
-        ),
-        vol.Required(CONF_URL): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.URL)
-        ),
-        vol.Required(CONF_API_KEY): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.PASSWORD)
-        ),
-        vol.Required(CONF_ALBUM_ID): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.TEXT)
-        ),
-        vol.Optional(CONF_INTERVAL, default=DEFAULT_INTERVAL): NumberSelector(
-            NumberSelectorConfig(
-                min=MIN_INTERVAL,
-                max=MAX_INTERVAL,
-                step=1,
-                unit_of_measurement="s",
-                mode=NumberSelectorMode.BOX,
-            )
-        ),
-        vol.Optional(CONF_LANDSCAPE_ONLY, default=True): BooleanSelector(),
-        vol.Optional(CONF_ALLOW_INSECURE, default=False): BooleanSelector(),
-    }
-)
+def _name_field(default: Any = vol.UNDEFINED) -> vol.Required:
+    return vol.Required(CONF_NAME, default=default)
 
-# Options schema: editable subset (url + api_key stay in entry.data).
-OPTIONS_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_NAME): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.TEXT)
-        ),
-        vol.Required(CONF_ALBUM_ID): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.TEXT)
-        ),
-        vol.Optional(CONF_REMOVE_TO_ALBUM_ID): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.TEXT)
-        ),
-        vol.Optional(CONF_INTERVAL, default=DEFAULT_INTERVAL): NumberSelector(
-            NumberSelectorConfig(
-                min=MIN_INTERVAL,
-                max=MAX_INTERVAL,
-                step=1,
-                unit_of_measurement="s",
-                mode=NumberSelectorMode.BOX,
-            )
-        ),
-        vol.Optional(CONF_LANDSCAPE_ONLY, default=True): BooleanSelector(),
-        vol.Optional(CONF_ALLOW_INSECURE, default=False): BooleanSelector(),
-    }
-)
+def _url_field(default: Any = vol.UNDEFINED) -> vol.Required:
+    return vol.Required(CONF_URL, default=default)
+
+def _api_key_field(default: Any = vol.UNDEFINED) -> vol.Required:
+    return vol.Required(CONF_API_KEY, default=default)
+
+def _album_id_field(default: Any = vol.UNDEFINED) -> vol.Required:
+    return vol.Required(CONF_ALBUM_ID, default=default)
+
+_TEXT = TextSelector(TextSelectorConfig(type=TextSelectorType.TEXT))
+_URL = TextSelector(TextSelectorConfig(type=TextSelectorType.URL))
+_PASSWORD = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
+
+def _interval_selector() -> NumberSelector:
+    return NumberSelector(
+        NumberSelectorConfig(
+            min=MIN_INTERVAL,
+            max=MAX_INTERVAL,
+            step=1,
+            unit_of_measurement="s",
+            mode=NumberSelectorMode.BOX,
+        )
+    )
 
 
-def _build_config_schema(user_input: dict[str, Any] | None) -> vol.Schema:
-    """Return CONFIG_SCHEMA, re-using user_input as suggested values when re-shown."""
-    if not user_input:
-        return CONFIG_SCHEMA
-    # Re-fill submitted values so errors preserve typed text.
+def _build_schema(suggested: dict[str, Any]) -> vol.Schema:
+    """Build the full schema pre-filled with suggested values.
+
+    Used for both the config flow (add) and options flow (edit) so both
+    forms are always field-symmetric. suggested should be the merged
+    effective config: {**entry.data, **entry.options} for options,
+    or the re-submitted user_input for error re-display.
+    """
+    s = suggested
     return vol.Schema(
         {
-            vol.Required(CONF_NAME, default=user_input.get(CONF_NAME, "")): TextSelector(
-                TextSelectorConfig(type=TextSelectorType.TEXT)
-            ),
-            vol.Required(CONF_URL, default=user_input.get(CONF_URL, "")): TextSelector(
-                TextSelectorConfig(type=TextSelectorType.URL)
-            ),
-            vol.Required(CONF_API_KEY, default=user_input.get(CONF_API_KEY, "")): TextSelector(
-                TextSelectorConfig(type=TextSelectorType.PASSWORD)
-            ),
-            vol.Required(CONF_ALBUM_ID, default=user_input.get(CONF_ALBUM_ID, "")): TextSelector(
-                TextSelectorConfig(type=TextSelectorType.TEXT)
-            ),
+            _name_field(s.get(CONF_NAME, "")): _TEXT,
+            _url_field(s.get(CONF_URL, "")): _URL,
+            _api_key_field(s.get(CONF_API_KEY, "")): _PASSWORD,
+            _album_id_field(s.get(CONF_ALBUM_ID, "")): _TEXT,
+            vol.Optional(
+                CONF_REMOVE_TO_ALBUM_ID,
+                default=s.get(CONF_REMOVE_TO_ALBUM_ID, ""),
+            ): _TEXT,
             vol.Optional(
                 CONF_INTERVAL,
-                default=user_input.get(CONF_INTERVAL, DEFAULT_INTERVAL),
-            ): NumberSelector(
-                NumberSelectorConfig(
-                    min=MIN_INTERVAL,
-                    max=MAX_INTERVAL,
-                    step=1,
-                    unit_of_measurement="s",
-                    mode=NumberSelectorMode.BOX,
-                )
-            ),
+                default=s.get(CONF_INTERVAL, DEFAULT_INTERVAL),
+            ): _interval_selector(),
             vol.Optional(
                 CONF_LANDSCAPE_ONLY,
-                default=user_input.get(CONF_LANDSCAPE_ONLY, True),
+                default=s.get(CONF_LANDSCAPE_ONLY, True),
             ): BooleanSelector(),
             vol.Optional(
                 CONF_ALLOW_INSECURE,
-                default=user_input.get(CONF_ALLOW_INSECURE, False),
+                default=s.get(CONF_ALLOW_INSECURE, False),
             ): BooleanSelector(),
         }
     )
+
+
+async def _validate(hass, user_input: dict[str, Any]) -> dict[str, str]:
+    """Run D-10 validation; return an errors dict (empty = success)."""
+    session = async_get_clientsession(
+        hass,
+        verify_ssl=not user_input.get(CONF_ALLOW_INSECURE, False),
+    )
+    client = ImmichClient(
+        session,
+        user_input[CONF_URL],
+        user_input[CONF_API_KEY],
+    )
+    try:
+        await client.validate(user_input[CONF_ALBUM_ID])
+    except ImmichAuthError:
+        return {"base": "invalid_auth"}
+    except ImmichConnError:
+        return {"base": "cannot_connect"}
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Unexpected error during Jax Stream validation")
+        return {"base": "unknown"}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +141,8 @@ def _build_config_schema(user_input: dict[str, Any] | None) -> vol.Schema:
 class JaxStreamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for Jax Stream.
 
-    CORE-01: renders the seven D-06 fields, calls ImmichClient.validate() on
-    submit (D-10) and maps failures to inline form errors before creating the
+    CORE-01: renders all fields, calls ImmichClient.validate() on submit
+    (D-10) and maps failures to inline form errors before creating the
     entry.  A duplicate url::album_id is aborted before entry creation.
     """
 
@@ -168,31 +155,8 @@ class JaxStreamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # D-08 seam: insecure flag -> verify_ssl=False; applied ONLY here on
-            # the validation session (never on ImageEntity or any other path,
-            # per RESEARCH Pitfall 6).
-            session = async_get_clientsession(
-                self.hass,
-                verify_ssl=not user_input[CONF_ALLOW_INSECURE],
-            )
-            client = ImmichClient(
-                session,
-                user_input[CONF_URL],
-                user_input[CONF_API_KEY],  # stored on client instance only; never logged
-            )
-
-            try:
-                # D-10: small POST /api/search/random to validate credentials + album.
-                await client.validate(user_input[CONF_ALBUM_ID])
-            except ImmichAuthError:
-                errors["base"] = "invalid_auth"
-            except ImmichConnError:
-                errors["base"] = "cannot_connect"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Unexpected error during Jax Stream validation")
-                errors["base"] = "unknown"
-            else:
-                # Validation passed -- set stable unique ID and create entry.
+            errors = await _validate(self.hass, user_input)
+            if not errors:
                 await self.async_set_unique_id(
                     f"{user_input[CONF_URL]}::{user_input[CONF_ALBUM_ID]}"
                 )
@@ -202,10 +166,9 @@ class JaxStreamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     data=user_input,
                 )
 
-        # Show (or re-show on error) the form.
         return self.async_show_form(
             step_id="user",
-            data_schema=_build_config_schema(user_input),
+            data_schema=_build_schema(user_input or {}),
             errors=errors,
         )
 
@@ -229,13 +192,13 @@ class JaxStreamOptionsFlow(config_entries.OptionsFlowWithReload):
     CORE-02: edits the entry and reloads it on save.
     OptionsFlowWithReload auto-reloads; no manual update listener needed.
 
-    Editable fields: name, album_id, interval, landscape_only, allow_insecure.
-    url and api_key stay in entry.data (not editable here).
+    Pre-populates from {**entry.data, **entry.options} so current effective
+    values are always visible. Validates credentials before saving.
 
     Data/options split (RESEARCH Open Q1 / A3): the config flow writes ALL
-    fields to entry.data on create; the options flow writes the editable
-    subset to entry.options.  The coordinator (Plan 04) reads the merged
-    view as {**entry.data, **entry.options}.
+    fields to entry.data on create; the options flow writes the full field
+    set to entry.options. The coordinator reads the merged view as
+    {**entry.data, **entry.options}, so options-flow edits always win.
 
     Note: do NOT assign self.config_entry in __init__ -- the framework sets
     it automatically (RESEARCH lines 291-293, 583).
@@ -245,21 +208,20 @@ class JaxStreamOptionsFlow(config_entries.OptionsFlowWithReload):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Handle the options step."""
+        errors: dict[str, str] = {}
+        merged = {**self.config_entry.data, **self.config_entry.options}
+
         if user_input is not None:
-            # The entity friendly name resolves from the config-entry TITLE
-            # (has_entity_name + _attr_name=None), which is set once at create.
-            # Writing CONF_NAME to options alone is a silent no-op, so push a
-            # rename through to the title explicitly.
-            if user_input.get(CONF_NAME):
-                self.hass.config_entries.async_update_entry(
-                    self.config_entry, title=user_input[CONF_NAME]
-                )
-            return self.async_create_entry(data=user_input)
+            errors = await _validate(self.hass, user_input)
+            if not errors:
+                if user_input.get(CONF_NAME):
+                    self.hass.config_entries.async_update_entry(
+                        self.config_entry, title=user_input[CONF_NAME]
+                    )
+                return self.async_create_entry(data=user_input)
 
         return self.async_show_form(
             step_id="init",
-            data_schema=self.add_suggested_values_to_schema(
-                OPTIONS_SCHEMA,
-                self.config_entry.options,
-            ),
+            data_schema=_build_schema(user_input if errors else merged),
+            errors=errors,
         )
