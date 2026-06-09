@@ -1,7 +1,6 @@
 next:
   name: Next
   description: Advance to the next photo, lift manual pause, and re-arm the 90-second touch window (same as a swipe gesture).
-  icon: mdi:skip-next
   fields:
     entity_id:
       name: Entity
@@ -18,7 +17,6 @@ next:
 previous:
   name: Previous
   description: Go back to the previous photo (from the ring buffer past window; up to 2 steps back). Does not affect pause state.
-  icon: mdi:skip-previous
   fields:
     entity_id:
       name: Entity
@@ -35,7 +33,6 @@ previous:
 remove:
   name: Remove
   description: Remove the current (or specified) photo from its Immich album.
-  icon: mdi:trash-can
   fields:
     entity_id:
       name: Entity
@@ -57,7 +54,6 @@ remove:
 set_rating:
   name: Set rating
   description: Set the Immich star rating on the current photo.
-  icon: mdi:star
   fields:
     entity_id:
       name: Entity
@@ -88,7 +84,6 @@ set_rating:
 rotate:
   name: Rotate
   description: Rotate the current photo via Immich non-destructive edit and show the corrected orientation in place (does not advance). Requires the asset.edit.create API-key scope.
-  icon: mdi:rotate-right
   fields:
     entity_id:
       name: Entity
@@ -123,7 +118,6 @@ rotate:
 touch:
   name: Touch
   description: Arm the 90-second touch window -- pauses auto-advance for 90 seconds without lifting a manual hold. Called by the frontend on tap.
-  icon: mdi:gesture-tap
   fields:
     entity_id:
       name: Entity
@@ -140,7 +134,6 @@ touch:
 pause:
   name: Pause
   description: Pause automatic photo rotation on a stream.
-  icon: mdi:pause-circle
   fields:
     entity_id:
       name: Entity
@@ -157,7 +150,6 @@ pause:
 resume:
   name: Resume
   description: Resume automatic photo rotation on a paused stream.
-  icon: mdi:play-circle
   fields:
     entity_id:
       name: Entity

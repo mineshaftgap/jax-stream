@@ -1,0 +1,12 @@
+{
+  "services": {
+    "next": { "service": "mdi:skip-next" },
+    "previous": { "service": "mdi:skip-previous" },
+    "remove": { "service": "mdi:trash-can" },
+    "set_rating": { "service": "mdi:star" },
+    "rotate": { "service": "mdi:rotate-right" },
+    "touch": { "service": "mdi:gesture-tap" },
+    "pause": { "service": "mdi:pause-circle" },
+    "resume": { "service": "mdi:play-circle" }
+  }
+}
