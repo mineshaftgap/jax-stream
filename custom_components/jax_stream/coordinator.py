@@ -10,8 +10,9 @@ Drives the timed fetch loop (CORE-03):
 
 Ring buffer (Phase 1 prefetch-window-restore):
   Window dir: <config>/jax_stream/<stream>/window/
-  Slot files: slot_00.jpg .. slot_{ring_size-1}.jpg (ring_size = N+1, N=3)
-  state.json: {head, slots} persisted beside the window dir.
+  Slot files: slot_00.jpg .. slot_{ring_size-1}.jpg (ring_size = N+1+M;
+    N=prefetch_count future, 1 current, M=past_count past -- Phase 4 past-window)
+  state.json: {head, past_count, slots} persisted beside the window dir.
 
 Keeps the last-good photo on Immich failure (D-12, "never blank").
 Seeds last-good bytes from on-disk random.jpg on restart (D-13).
@@ -37,11 +38,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     BACKFILL_RETRY_CAP,
-    BRIDGE_CURRENT_TXT,
-    BRIDGE_PAUSE_MANUAL,
-    BRIDGE_PAUSE_TOUCH,
     BRIDGE_RATE_CURRENT,
-    BRIDGE_RATE_PENDING,
     DEFAULT_PAST_COUNT,
     DEFAULT_PREFETCH_COUNT,
     DEFAULT_STREAM_SUBDIR,
@@ -151,14 +148,6 @@ def _atomic_write(dest: str, data: bytes) -> None:
     os.replace(tmp, dest)   # atomic rename; atomic so the view reads complete files
 
 
-def _remove_if_exists(path: str) -> None:
-    """Remove path if present; no error if absent. Executor-only (blocking I/O)."""
-    try:
-        os.remove(path)
-    except FileNotFoundError:
-        pass
-
-
 def _read_if_exists(path: str) -> bytes | None:
     """Return file bytes if path exists, else None.
 
@@ -252,6 +241,16 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self.image_bytes: bytes | None = None
         self.image_last_updated = None   # datetime | None
 
+        # Adjacent-slot image entities (pub/sub adjacent slot migration).
+        # image.jax_stream_<stream>_next_image serves slot (head+1); _previous_image
+        # serves slot (head-1). Backs the JS prefetch + carousel left/right panels
+        # with subscription-driven entity_picture URLs, replacing the state.json +
+        # slot_XX.jpg polling in prefetchNext. None until the adjacent slot exists.
+        self._next_bytes: bytes | None = None
+        self._prev_bytes: bytes | None = None
+        self.next_image_last_updated = None   # datetime | None
+        self.prev_image_last_updated = None   # datetime | None
+
         # Security V5 / T-01-01: validate stream subdir before joining into a path.
         # Port of v41 lines 112-116 which reject names not matching [A-Za-z0-9_-]+.
         stream_subdir = getattr(settings, "stream_subdir", DEFAULT_STREAM_SUBDIR) or DEFAULT_STREAM_SUBDIR
@@ -260,14 +259,17 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
                 f"Invalid stream subdir {stream_subdir!r}: must match [A-Za-z0-9_-]+"
             )
 
+        self._stream_subdir: str = stream_subdir
+
         # Build the disk path once using hass.config.path (never hardcode /config).
         self.disk_path: str = hass.config.path(
             *DISK_PATH_SEGMENTS, stream_subdir, DISK_FILENAME
         )
 
         # Phase 2 pause-gate state (D-05/D-06/D-07/D-08). Three-state v41 model:
-        #   _manual_paused  -> pause_manual.txt (indefinite hold)
-        #   _touch_deadline -> pause_touch.txt  (wall-clock epoch; 0 = not armed)
+        #   _manual_paused  -> switch entity (indefinite hold)
+        #   _touch_deadline -> sensor.jax_stream_<stream>_touch_deadline
+        #                      (wall-clock epoch; 0 = not armed)
         self._manual_paused: bool = False
         self._touch_deadline: float = 0.0
         self._force_refresh: bool = False          # explicit-call gate bypass (used by handle_refresh)
@@ -301,9 +303,62 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self._backfill_task: asyncio.Task | None = None
         self._backfill_running: bool = False
 
+        # Sequential (shuffle=False) state: ordered asset list and current index.
+        # Populated lazily on first advance; refreshed on wrap-around.
+        self._ordered_assets: list[str] = []
+        self._ordered_index: int = 0
+
     def _slot_path(self, index: int) -> str:
         """Return the absolute path for ring slot `index`."""
         return os.path.join(self._window_dir, f"slot_{index:02d}.jpg")
+
+    async def _refresh_adjacent_bytes(self) -> None:
+        """Reload _next_bytes/_prev_bytes from the slots adjacent to head.
+
+        Backs image.jax_stream_<stream>_next_image (slot head+1) and
+        _previous_image (slot head-1). Bumps the matching last_updated only when
+        the bytes actually change, so the entity_picture access token (and the
+        JS state_changed subscription) fires exactly when a neighbor changes --
+        no spurious frontend refetches.
+
+        When a neighbor's slot is absent the entity must serve NO image rather
+        than a stale one. For the past edge (past_count == 0) we therefore CLEAR
+        _prev_bytes and bump the timestamp (token rotates -> JS re-fetches, gets
+        a non-ok proxy response, and drops its prev panel). Without this the
+        previous_image entity keeps serving the last real prev photo, so a
+        back-swipe at the past-window edge slides the stale photo in (the
+        black-panel / stale-photo flash). The next edge (future_count == 0) is
+        left untouched: prefetch keeps the future window full so it effectively
+        never occurs, and forward swipes do not flash. We intentionally do NOT
+        mirror the current photo into _prev_bytes -- a current-as-previous panel
+        would be a confusing phantom on the very first photo after boot.
+
+        Per the image-entity pub/sub contract, bump last_updated ONLY when the
+        bytes actually change, so the entity_picture token (and the JS
+        state_changed subscription) fires exactly when a neighbor changes -- no
+        spurious frontend refetches.
+        """
+        next_idx = (self._head + 1) % self._ring_size
+        if self._future_count > 0:
+            data = await self.hass.async_add_executor_job(
+                _read_if_exists, self._slot_path(next_idx)
+            )
+            if data and data[:3] == JPEG_MAGIC and data != self._next_bytes:
+                self._next_bytes = data
+                self.next_image_last_updated = dt_util.utcnow()
+
+        prev_idx = (self._head - 1 + self._ring_size) % self._ring_size
+        if self._past_count > 0:
+            data = await self.hass.async_add_executor_job(
+                _read_if_exists, self._slot_path(prev_idx)
+            )
+            if data and data[:3] == JPEG_MAGIC and data != self._prev_bytes:
+                self._prev_bytes = data
+                self.prev_image_last_updated = dt_util.utcnow()
+        elif self._prev_bytes is not None:
+            # Past-window edge: no real previous photo -> serve nothing.
+            self._prev_bytes = None
+            self.prev_image_last_updated = dt_util.utcnow()
 
     def _kick_backfill(self) -> None:
         """Spawn (or no-op if already running) the background backfill task."""
@@ -398,6 +453,10 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
             self.image_bytes = seeded
             self.image_last_updated = dt_util.utcnow()
 
+        # Seed adjacent-slot entity bytes so image.jax_stream_<stream>_next_image /
+        # _previous_image have content the moment the platform creates them.
+        await self._refresh_adjacent_bytes()
+
     async def _async_update_data(self) -> bytes:
         """Organic-timer advance: promote the next ring slot into random.jpg.
 
@@ -453,7 +512,12 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         await self.hass.async_add_executor_job(
             _write_state_json, self._state_json_path, self._head, self._slot_uuids, self._past_count
         )
+        # Refresh adjacent entities BEFORE returning -- the post-return
+        # _handle_coordinator_update on the next/prev image entities will pick up
+        # the new last_updated timestamps in the same tick.
+        await self._refresh_adjacent_bytes()
         self._kick_backfill()
+        self.hass.bus.async_fire(f"{DOMAIN}_advance", {"stream": self._stream_subdir})
         return jpeg
 
     async def _fetch_next_slot(self) -> tuple[bytes, str, int]:
@@ -480,7 +544,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
             # so any remaining future slots are still valid.
 
         # Degraded path: on-demand fetch.
-        asset_id = await self.client.random_landscape(self.settings)
+        asset_id = await self._next_asset_id()
         try:
             info = await self.client.get_asset_info(asset_id)
         except ImmichError:
@@ -495,56 +559,51 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self._slot_ratings[next_slot] = info["rating"]
         return jpeg, asset_id, info["rating"]
 
+    async def _next_asset_id(self) -> str:
+        """Return the next asset ID based on shuffle setting.
+
+        shuffle=True:  random via /api/search/random (existing behavior).
+        shuffle=False: sequential via album order from /api/albums/{id}.
+                       Fetches and caches the full asset list on first call;
+                       refreshes on wrap-around so new photos appear eventually.
+        """
+        if getattr(self.settings, "shuffle", True):
+            return await self.client.random_landscape(self.settings)
+
+        if not self._ordered_assets or self._ordered_index >= len(self._ordered_assets):
+            self._ordered_assets = await self.client.get_album_asset_ids(
+                self.settings.album_id
+            )
+            self._ordered_index = 0
+            if not self._ordered_assets:
+                raise NoLandscapeSurvivor(self.settings.album_id)
+
+        asset_id = self._ordered_assets[self._ordered_index]
+        self._ordered_index += 1
+        return asset_id
+
     # -----------------------------------------------------------------------
     # Bridge file helpers
     # -----------------------------------------------------------------------
 
     async def _write_content_bridges(self, asset_id: str, rating: int) -> None:
-        """Write current.txt, rate_current.txt, rate_pending.txt bridge files."""
-        await self.hass.async_add_executor_job(
-            _atomic_write, os.path.join(self._bridge_dir, BRIDGE_CURRENT_TXT),
-            f"{asset_id}\n".encode(),
-        )
+        """Write rate_current.txt bridge file."""
         await self.hass.async_add_executor_job(
             _atomic_write, os.path.join(self._bridge_dir, BRIDGE_RATE_CURRENT),
             f"{rating}\n".encode(),
-        )
-        await self.hass.async_add_executor_job(
-            _atomic_write, os.path.join(self._bridge_dir, BRIDGE_RATE_PENDING),
-            f"{int(time.time())}\n".encode(),
         )
 
     # -----------------------------------------------------------------------
     # Phase 2 action methods (D-06 through D-12)
     # -----------------------------------------------------------------------
 
-    async def _write_pause_bridge(self) -> None:
-        """Sync pause_manual.txt to _manual_paused; sync pause_touch.txt to _touch_deadline (D-05)."""
-        manual_path = os.path.join(self._bridge_dir, BRIDGE_PAUSE_MANUAL)
-        touch_path  = os.path.join(self._bridge_dir, BRIDGE_PAUSE_TOUCH)
-        if self._manual_paused:
-            await self.hass.async_add_executor_job(_atomic_write, manual_path, b"")
-        else:
-            await self.hass.async_add_executor_job(_remove_if_exists, manual_path)
-        if self._touch_deadline > 0:
-            val = f"{int(self._touch_deadline)}\n".encode()
-            await self.hass.async_add_executor_job(_atomic_write, touch_path, val)
-        else:
-            await self.hass.async_add_executor_job(_remove_if_exists, touch_path)
-
-    async def _write_touch_bridge(self) -> None:
-        """Write pause_touch.txt only (touch does not change manual hold)."""
-        touch_path = os.path.join(self._bridge_dir, BRIDGE_PAUSE_TOUCH)
-        val = f"{int(self._touch_deadline)}\n".encode()
-        await self.hass.async_add_executor_job(_atomic_write, touch_path, val)
-
     async def async_next(self) -> None:
         """D-08 swipe matrix: bypass gate, lift manual hold, re-arm 90s window.
 
         Inline promote: reads the next ring slot and writes it to random.jpg
         BEFORE returning, so the Promise from callService resolves only after
-        the new frame is already on disk. This is what allows refreshDelayMs
-        to be 100ms -- no Immich round-trip on the hot path.
+        the new frame is already on disk. The frontend can then reload
+        immediately -- no Immich round-trip on the hot path.
 
         Follows the async_rotate precedent (coordinator.py:426-429 in the old
         version) of setting image_bytes / image_last_updated / calling
@@ -553,7 +612,6 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         """
         self._manual_paused = False
         self._touch_deadline = time.time() + TOUCH_WINDOW_SECONDS
-        await self._write_pause_bridge()
 
         try:
             jpeg, asset_id, rating = await self._fetch_next_slot()
@@ -579,22 +637,65 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         await self.hass.async_add_executor_job(
             _write_state_json, self._state_json_path, self._head, self._slot_uuids, self._past_count
         )
+        await self._refresh_adjacent_bytes()
         self.async_update_listeners()
         self._kick_backfill()
+        self.hass.bus.async_fire(f"{DOMAIN}_advance", {"stream": self._stream_subdir})
         # Do NOT call async_request_refresh() -- the display is already updated.
+
+    async def async_previous(self) -> None:
+        """Go back one step: promote the previous past slot to random.jpg.
+
+        Mirrors async_next but in reverse. Raises ServiceValidationError when
+        no past slot is available (past_count == 0 or slot file missing/bad).
+        Does not touch pause state -- callers handle resume/touch separately.
+        """
+        if self._past_count == 0:
+            raise ServiceValidationError("No previous photo")
+
+        prev_slot = (self._head - 1 + self._ring_size) % self._ring_size
+        slot_file = self._slot_path(prev_slot)
+        data = await self.hass.async_add_executor_job(_read_if_exists, slot_file)
+        if not (data and data[:3] == JPEG_MAGIC):
+            raise ServiceValidationError("Previous photo slot is missing or invalid")
+
+        uuid = self._slot_uuids[prev_slot] or ""
+        rating = self._slot_ratings[prev_slot]
+
+        # Move head backward; old head becomes the first future slot.
+        self._head = prev_slot
+        self._future_count += 1   # old head is now slot head+1 (valid JPEG)
+        self._past_count -= 1
+
+        await self.hass.async_add_executor_job(_atomic_write, self.disk_path, data)
+        self.current_asset_id = uuid or None
+        self._current_rating = rating
+        self.image_bytes = data
+        self.image_last_updated = dt_util.utcnow()
+        await self._write_content_bridges(uuid, rating)
+        await self.hass.async_add_executor_job(
+            _write_state_json, self._state_json_path, self._head, self._slot_uuids, self._past_count
+        )
+        await self._refresh_adjacent_bytes()
+        self.async_update_listeners()
+        self.hass.bus.async_fire(f"{DOMAIN}_advance", {"stream": self._stream_subdir})
 
     async def async_set_paused(self, paused: bool) -> None:
         """Switch turn_on(True)/turn_off(False). turn_off is FULL resume: clears both (D-08)."""
         self._manual_paused = paused
         if not paused:
             self._touch_deadline = 0.0
-        await self._write_pause_bridge()
         self.async_update_listeners()
 
     async def async_touch(self) -> None:
-        """D-06: arm the 90s window. Does NOT lift manual hold."""
+        """D-06: arm the 90s window. Does NOT lift manual hold.
+
+        Fires async_update_listeners so sensor.jax_stream_<stream>_touch_deadline
+        pushes the new deadline to subscribed frontends (cross-device ring sync,
+        post-bounce restore).
+        """
         self._touch_deadline = time.time() + TOUCH_WINDOW_SECONDS
-        await self._write_touch_bridge()
+        self.async_update_listeners()
 
     async def async_set_rating(self, rating: int, asset_id: str | None = None) -> None:
         """Rate the current photo 0-5 (D-09). 0 = Unrate.
@@ -797,7 +898,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
                 target_slot = (self._head + self._future_count + 1) % self._ring_size
                 slot_file = self._slot_path(target_slot)
                 try:
-                    asset_id = await self.client.random_landscape(self.settings)
+                    asset_id = await self._next_asset_id()
                     try:
                         info = await self.client.get_asset_info(asset_id)
                     except ImmichError:
@@ -867,6 +968,12 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
                                     _LOGGER.debug(
                                         "Phase 2 COM patch for slot %d skipped: %s", prev_idx, _e
                                     )
+                    # A backfill that filled slot head+1 changes the next-image
+                    # entity. Refresh its bytes and push to listeners so the JS
+                    # state_changed subscription re-prefetches without polling.
+                    if target_slot == (self._head + 1) % self._ring_size:
+                        await self._refresh_adjacent_bytes()
+                        self.async_update_listeners()
                 except asyncio.CancelledError:
                     raise
                 except (ImmichError, NoLandscapeSurvivor) as exc:

@@ -65,7 +65,6 @@ STREAM_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 # ---------------------------------------------------------------------------
 BRIDGE_CURRENT_TXT  = "current.txt"
 BRIDGE_PAUSE_MANUAL = "pause_manual.txt"
-BRIDGE_PAUSE_TOUCH  = "pause_touch.txt"
 BRIDGE_RATE_CURRENT = "rate_current.txt"
 BRIDGE_RATE_PENDING = "rate_pending.txt"
 
@@ -79,12 +78,13 @@ TOUCH_WINDOW_SECONDS = 90
 # direct port of v41 REMOVE_TO_ALBUM_ID (swipe.conf)
 # ---------------------------------------------------------------------------
 CONF_REMOVE_TO_ALBUM_ID = "remove_to_album_id"
+CONF_SHUFFLE = "shuffle"
 
 # ---------------------------------------------------------------------------
 # Phase 2: service names (registered in __init__.async_setup)
 # ---------------------------------------------------------------------------
-SERVICE_REFRESH    = "refresh"
 SERVICE_NEXT       = "next"
+SERVICE_PREVIOUS   = "previous"
 SERVICE_REMOVE     = "remove"
 SERVICE_SET_RATING = "set_rating"
 SERVICE_TOUCH      = "touch"
@@ -119,6 +119,11 @@ JS_FILENAME    = "jax_stream.js"
 JS_ROUTE_PATH  = "/jax_stream_frontend/jax_stream.js"
 SVG_FILENAME   = "jaxicon.svg"
 SVG_ROUTE_PATH = "/jax_stream_frontend/jaxicon.svg"
+# Lovelace custom card (Add-card picker): registers <jax-stream-card> + pushes
+# to window.customCards. Served like the kiosk module and loaded via
+# add_extra_js_url so it shows in the picker with no manual resource step.
+CARD_FILENAME   = "jax_stream_card.js"
+CARD_ROUTE_PATH = "/jax_stream_frontend/jax_stream_card.js"
 
 # ---------------------------------------------------------------------------
 # Prefetch ring buffer (Phase 1 of prefetch-window-restore)
@@ -135,10 +140,14 @@ BACKFILL_RETRY_CAP = 6
 JPEG_MAGIC = b"\xff\xd8\xff"
 
 # Phase 4 (past-window): past slots retained for reload-resilient back-nav.
-# M past frames are stored so a freshly-reloaded client can recover back-nav
-# history even after the in-memory blob cache is cleared.
+# M past frames are stored so a back-swipe can step back through the last M
+# photos (and a freshly-reloaded client recovers that history). M caps back-nav
+# DEPTH: previous_image serves head-1 and async_previous walks head backwards
+# through the past slots, so you can go back at most M photos from the live edge.
+# Past slots are RETAINED old heads (free; populated as head advances), not
+# backfilled -- raising M costs ~M retained jpgs on disk, no extra fetching.
 # ring_size = N + 1 + M (N future + 1 current + M past).
-DEFAULT_PAST_COUNT = 2
+DEFAULT_PAST_COUNT = 20
 CONF_PAST_COUNT = "past_count"
 
 # ---------------------------------------------------------------------------

@@ -11,10 +11,12 @@
           "remove_to_album_id": "Recovery album ID (optional)",
           "interval": "Refresh interval (seconds)",
           "landscape_only": "Landscape only",
+          "shuffle": "Shuffle photos",
           "allow_insecure": "Allow insecure HTTPS"
         },
         "data_description": {
           "remove_to_album_id": "Assets removed from the source album are added here first as a fail-safe before deletion. Requires albumAsset.create/delete and album.read scopes on the API key; asset.update is needed for ratings.",
+          "shuffle": "On: random order (default). Off: album order -- requires album.read scope on the API key.",
           "allow_insecure": "Disable HTTPS certificate verification for a self-signed Immich. Leave off unless you understand the risk."
         }
       }
@@ -26,6 +28,70 @@
     },
     "abort": {
       "already_configured": "This Immich album is already configured."
+    }
+  },
+  "entity": {
+    "image": {
+      "next_image": {
+        "name": "Next image"
+      },
+      "previous_image": {
+        "name": "Previous image"
+      }
+    },
+    "button": {
+      "next": {
+        "name": "Next photo"
+      },
+      "previous": {
+        "name": "Previous photo"
+      },
+      "remove": {
+        "name": "Remove photo"
+      },
+      "rotate_cw": {
+        "name": "Rotate clockwise"
+      },
+      "rotate_ccw": {
+        "name": "Rotate counter-clockwise"
+      }
+    },
+    "number": {
+      "rating": {
+        "name": "Rating"
+      }
+    },
+    "sensor": {
+      "current_asset": {
+        "name": "Current photo"
+      },
+      "current_photo_link": {
+        "name": "Current photo link"
+      },
+      "prefetch_ready": {
+        "name": "Prefetch ready"
+      },
+      "pause_reason": {
+        "name": "Pause reason",
+        "state": {
+          "running": "Running",
+          "touch_window": "Touch window",
+          "manual": "Manual hold"
+        }
+      },
+      "touch_deadline": {
+        "name": "Touch deadline"
+      }
+    },
+    "select": {
+      "album": {
+        "name": "Album"
+      }
+    },
+    "switch": {
+      "pause": {
+        "name": "Pause"
+      }
     }
   },
   "options": {
@@ -40,10 +106,12 @@
           "remove_to_album_id": "Recovery album ID (optional)",
           "interval": "Refresh interval (seconds)",
           "landscape_only": "Landscape only",
+          "shuffle": "Shuffle photos",
           "allow_insecure": "Allow insecure HTTPS"
         },
         "data_description": {
-          "remove_to_album_id": "Assets removed from the source album are added here first as a fail-safe before deletion. Requires albumAsset.create/delete and album.read scopes on the API key; asset.update is needed for ratings."
+          "remove_to_album_id": "Assets removed from the source album are added here first as a fail-safe before deletion. Requires albumAsset.create/delete and album.read scopes on the API key; asset.update is needed for ratings.",
+          "shuffle": "On: random order (default). Off: album order -- requires album.read scope on the API key."
         }
       }
     }

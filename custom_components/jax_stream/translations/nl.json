@@ -1,0 +1,119 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Jax Stream",
+        "data": {
+          "name": "Streamnaam",
+          "url": "Immich-URL",
+          "api_key": "API-sleutel",
+          "album_id": "Album-ID",
+          "remove_to_album_id": "Herstelalbum-ID (optioneel)",
+          "interval": "Verversingsinterval (seconden)",
+          "landscape_only": "Alleen liggend formaat",
+          "shuffle": "Foto's willekeurig afspelen",
+          "allow_insecure": "Onbeveiligde HTTPS toestaan"
+        },
+        "data_description": {
+          "remove_to_album_id": "Elementen die uit het bronalbum zijn verwijderd, worden hier eerst toegevoegd als veiligheidsmaatregel vóór definitieve verwijdering. Vereist de machtigingen albumAsset.create/delete en album.read op de API-sleutel; asset.update is nodig voor beoordelingen.",
+          "shuffle": "Aan: willekeurige volgorde (standaard). Uit: albumvolgorde -- vereist de machtiging album.read op de API-sleutel.",
+          "allow_insecure": "HTTPS-certificaatverificatie uitschakelen voor een Immich-instantie met een zelfondertekend certificaat. Alleen inschakelen als u het risico begrijpt."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbinding met Immich mislukt. Controleer de URL en of de server bereikbaar is.",
+      "invalid_auth": "Immich heeft de API-sleutel of het album geweigerd. Controleer de API-sleutel en het album-ID.",
+      "unknown": "Onverwachte fout. Raadpleeg het Home Assistant-logboek."
+    },
+    "abort": {
+      "already_configured": "Dit Immich-album is al geconfigureerd."
+    }
+  },
+  "entity": {
+    "image": {
+      "next_image": {
+        "name": "Volgende afbeelding"
+      },
+      "previous_image": {
+        "name": "Vorige afbeelding"
+      }
+    },
+    "button": {
+      "next": {
+        "name": "Volgende foto"
+      },
+      "previous": {
+        "name": "Vorige foto"
+      },
+      "remove": {
+        "name": "Foto verwijderen"
+      },
+      "rotate_cw": {
+        "name": "Met de klok mee draaien"
+      },
+      "rotate_ccw": {
+        "name": "Tegen de klok in draaien"
+      }
+    },
+    "number": {
+      "rating": {
+        "name": "Beoordeling"
+      }
+    },
+    "sensor": {
+      "current_asset": {
+        "name": "Huidige foto"
+      },
+      "current_photo_link": {
+        "name": "Link naar huidige foto"
+      },
+      "prefetch_ready": {
+        "name": "Vooraf laden gereed"
+      },
+      "pause_reason": {
+        "name": "Reden voor pauze",
+        "state": {
+          "running": "Actief",
+          "touch_window": "Aanraakvenster",
+          "manual": "Handmatige pauze"
+        }
+      },
+      "touch_deadline": {
+        "name": "Einde aanraakvenster"
+      }
+    },
+    "select": {
+      "album": {
+        "name": "Album"
+      }
+    },
+    "switch": {
+      "pause": {
+        "name": "Pauze"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Jax Stream-opties",
+        "data": {
+          "name": "Streamnaam",
+          "url": "Immich-URL",
+          "api_key": "API-sleutel",
+          "album_id": "Album-ID",
+          "remove_to_album_id": "Herstelalbum-ID (optioneel)",
+          "interval": "Verversingsinterval (seconden)",
+          "landscape_only": "Alleen liggend formaat",
+          "shuffle": "Foto's willekeurig afspelen",
+          "allow_insecure": "Onbeveiligde HTTPS toestaan"
+        },
+        "data_description": {
+          "remove_to_album_id": "Elementen die uit het bronalbum zijn verwijderd, worden hier eerst toegevoegd als veiligheidsmaatregel vóór definitieve verwijdering. Vereist de machtigingen albumAsset.create/delete en album.read op de API-sleutel; asset.update is nodig voor beoordelingen.",
+          "shuffle": "Aan: willekeurige volgorde (standaard). Uit: albumvolgorde -- vereist de machtiging album.read op de API-sleutel."
+        }
+      }
+    }
+  }
+}

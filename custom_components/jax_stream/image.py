@@ -41,7 +41,11 @@ async def async_setup_entry(
     One entity per config entry (one per stream).
     """
     coordinator: JaxStreamCoordinator = entry.runtime_data
-    async_add_entities([JaxStreamImage(coordinator, entry)])
+    async_add_entities([
+        JaxStreamImage(coordinator, entry),
+        JaxStreamNextImage(coordinator, entry),
+        JaxStreamPrevImage(coordinator, entry),
+    ])
 
 
 class JaxStreamImage(CoordinatorEntity[JaxStreamCoordinator], ImageEntity):
@@ -93,3 +97,81 @@ class JaxStreamImage(CoordinatorEntity[JaxStreamCoordinator], ImageEntity):
         """
         self._attr_image_last_updated = self.coordinator.image_last_updated
         super()._handle_coordinator_update()
+
+
+class _JaxStreamAdjacentImage(CoordinatorEntity[JaxStreamCoordinator], ImageEntity):
+    """Base for the next/previous adjacent-slot image entities.
+
+    These expose the coordinator's pre-fetched neighbor bytes so the frontend
+    can prefetch and preview the adjacent photos via subscription-driven
+    entity_picture URLs (pub/sub adjacent slot migration), replacing the
+    state.json + slot_XX.jpg polling that prefetchNext used to do.
+
+    Subclasses set _attr_translation_key and override _bytes / _last_updated to
+    point at the matching coordinator fields. Returns None bytes until the
+    adjacent slot exists (e.g. no previous photo on the first frame after boot);
+    the frontend treats a missing picture as "no panel".
+    """
+
+    _attr_has_entity_name = True
+    _attr_content_type = "image/jpeg"
+
+    def __init__(
+        self,
+        coordinator: JaxStreamCoordinator,
+        entry: "ConfigEntry",
+        uid_suffix: str,
+    ) -> None:
+        CoordinatorEntity.__init__(self, coordinator)
+        ImageEntity.__init__(self, coordinator.hass)
+        self._attr_unique_id = f"{entry.entry_id}_{uid_suffix}"
+        self._attr_device_info = build_device_info(entry)
+        self._attr_image_last_updated = self._last_updated()
+
+    def _bytes(self) -> bytes | None:
+        raise NotImplementedError
+
+    def _last_updated(self):
+        raise NotImplementedError
+
+    async def async_image(self) -> bytes | None:
+        """Return the adjacent slot bytes from coordinator memory (no I/O here)."""
+        return self._bytes()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Sync image_last_updated so HA refetches the proxy when the neighbor changes."""
+        self._attr_image_last_updated = self._last_updated()
+        super()._handle_coordinator_update()
+
+
+class JaxStreamNextImage(_JaxStreamAdjacentImage):
+    """Image entity serving the next ring slot (head+1) -- the prefetch target."""
+
+    _attr_translation_key = "next_image"
+    _attr_icon = "mdi:image-move"
+
+    def __init__(self, coordinator: JaxStreamCoordinator, entry: "ConfigEntry") -> None:
+        super().__init__(coordinator, entry, "next")
+
+    def _bytes(self) -> bytes | None:
+        return self.coordinator._next_bytes
+
+    def _last_updated(self):
+        return self.coordinator.next_image_last_updated
+
+
+class JaxStreamPrevImage(_JaxStreamAdjacentImage):
+    """Image entity serving the previous ring slot (head-1) -- the back-swipe panel."""
+
+    _attr_translation_key = "previous_image"
+    _attr_icon = "mdi:image-move"
+
+    def __init__(self, coordinator: JaxStreamCoordinator, entry: "ConfigEntry") -> None:
+        super().__init__(coordinator, entry, "previous")
+
+    def _bytes(self) -> bytes | None:
+        return self.coordinator._prev_bytes
+
+    def _last_updated(self):
+        return self.coordinator.prev_image_last_updated

@@ -36,18 +36,21 @@ from .const import (
     CONF_INTERVAL,
     CONF_LANDSCAPE_ONLY,
     CONF_REMOVE_TO_ALBUM_ID,
+    CONF_SHUFFLE,
     CONF_URL,
     DEFAULT_INTERVAL,
     DEFAULT_STREAM_SUBDIR,
     DOMAIN,
     JS_FILENAME,
     JS_ROUTE_PATH,
+    CARD_FILENAME,
+    CARD_ROUTE_PATH,
     SVG_FILENAME,
     SVG_ROUTE_PATH,
     RETRY_CAP,
     SERVICE_NEXT,
     SERVICE_PAUSE,
-    SERVICE_REFRESH,
+    SERVICE_PREVIOUS,
     SERVICE_REMOVE,
     SERVICE_RESUME,
     SERVICE_ROTATE,
@@ -69,7 +72,7 @@ _LOGGER = logging.getLogger(__name__)
 # Typed config entry alias: ConfigEntry[JaxStreamCoordinator].
 # entry.runtime_data is JaxStreamCoordinator -- one per stream.
 
-PLATFORMS: list[Platform] = [Platform.IMAGE, Platform.BUTTON, Platform.SELECT, Platform.SWITCH]
+PLATFORMS: list[Platform] = [Platform.IMAGE, Platform.BUTTON, Platform.NUMBER, Platform.SELECT, Platform.SENSOR, Platform.SWITCH]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -172,14 +175,13 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             return coord  # type: ignore[return-value]
         raise ServiceValidationError("Provide entity_id (target) or stream (data)")
 
-    async def handle_refresh(call: ServiceCall) -> None:
-        coord = await _resolve_coordinator(call)
-        coord._force_refresh = True  # bypass gate so a manual refresh always fires
-        await coord.async_request_refresh()
-
     async def handle_next(call: ServiceCall) -> None:
         coord = await _resolve_coordinator(call)
         await coord.async_next()
+
+    async def handle_previous(call: ServiceCall) -> None:
+        coord = await _resolve_coordinator(call)
+        await coord.async_previous()
 
     async def handle_remove(call: ServiceCall) -> None:
         coord = await _resolve_coordinator(call)
@@ -210,8 +212,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         coord = await _resolve_coordinator(call)
         await coord.async_set_paused(False)
 
-    hass.services.async_register(DOMAIN, SERVICE_REFRESH, handle_refresh, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_NEXT, handle_next, schema=SCHEMA_STREAM_TARGET)
+    hass.services.async_register(DOMAIN, SERVICE_PREVIOUS, handle_previous, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_REMOVE, handle_remove, schema=SCHEMA_REMOVE)
     hass.services.async_register(DOMAIN, SERVICE_SET_RATING, handle_set_rating, schema=SCHEMA_SET_RATING)
     hass.services.async_register(DOMAIN, SERVICE_ROTATE, handle_rotate, schema=SCHEMA_ROTATE)
@@ -234,6 +236,20 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     ])
 
     add_extra_js_url(hass, f"{JS_ROUTE_PATH}?v={content_hash}")
+
+    # Lovelace custom card: same serve+inject pattern as the kiosk module.
+    # Loading via add_extra_js_url registers <jax-stream-card> on every frontend
+    # page, so it appears in the Add-card picker with no manual resource step.
+    card_path = str(Path(__file__).parent / CARD_FILENAME)
+    card_hash = await hass.async_add_executor_job(_compute_js_hash, card_path)
+    await hass.http.async_register_static_paths([
+        StaticPathConfig(
+            url_path=CARD_ROUTE_PATH,
+            path=card_path,
+            cache_headers=True,
+        )
+    ])
+    add_extra_js_url(hass, f"{CARD_ROUTE_PATH}?v={card_hash}")
 
     svg_path = str(Path(__file__).parent / SVG_FILENAME)
     await hass.http.async_register_static_paths([
@@ -298,6 +314,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
         retry_cap=RETRY_CAP,
         stream_subdir=DEFAULT_STREAM_SUBDIR,  # fixed; per-stream subdirs deferred to backlog (D-08)
         remove_to_album_id=merged.get(CONF_REMOVE_TO_ALBUM_ID) or None,
+        shuffle=merged.get(CONF_SHUFFLE, True),
     )
 
     coordinator = JaxStreamCoordinator(hass, entry, client, settings)

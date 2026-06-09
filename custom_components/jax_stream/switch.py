@@ -51,6 +51,7 @@ class JaxStreamPauseSwitch(CoordinatorEntity[JaxStreamCoordinator], SwitchEntity
 
     _attr_has_entity_name = True
     _attr_translation_key = "pause"
+    _attr_icon = "mdi:pause-circle"
 
     def __init__(
         self,

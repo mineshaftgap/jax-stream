@@ -1,0 +1,119 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Jax Stream",
+        "data": {
+          "name": "Nom du flux",
+          "url": "URL Immich",
+          "api_key": "Clé API",
+          "album_id": "ID de l'album",
+          "remove_to_album_id": "ID de l'album de récupération (optionnel)",
+          "interval": "Intervalle de rafraîchissement (secondes)",
+          "landscape_only": "Mode paysage uniquement",
+          "shuffle": "Mélanger les photos",
+          "allow_insecure": "Autoriser HTTPS non sécurisé"
+        },
+        "data_description": {
+          "remove_to_album_id": "Les éléments supprimés de l'album source sont d'abord ajoutés ici comme mesure de sécurité avant la suppression. Nécessite les permissions albumAsset.create/delete et album.read sur la clé API ; asset.update est requis pour les notes.",
+          "shuffle": "Activé : ordre aléatoire (par défaut). Désactivé : ordre de l'album -- nécessite la permission album.read sur la clé API.",
+          "allow_insecure": "Désactiver la vérification du certificat HTTPS pour un Immich avec un certificat auto-signé. Ne pas activer sauf si vous comprenez le risque."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossible de se connecter à Immich. Vérifiez l'URL et que le serveur est accessible.",
+      "invalid_auth": "Immich a rejeté la clé API ou l'album. Vérifiez la clé API et l'ID de l'album.",
+      "unknown": "Erreur inattendue. Consultez le journal de Home Assistant."
+    },
+    "abort": {
+      "already_configured": "Cet album Immich est déjà configuré."
+    }
+  },
+  "entity": {
+    "image": {
+      "next_image": {
+        "name": "Image suivante"
+      },
+      "previous_image": {
+        "name": "Image précédente"
+      }
+    },
+    "button": {
+      "next": {
+        "name": "Photo suivante"
+      },
+      "previous": {
+        "name": "Photo précédente"
+      },
+      "remove": {
+        "name": "Supprimer la photo"
+      },
+      "rotate_cw": {
+        "name": "Rotation horaire"
+      },
+      "rotate_ccw": {
+        "name": "Rotation antihoraire"
+      }
+    },
+    "number": {
+      "rating": {
+        "name": "Note"
+      }
+    },
+    "sensor": {
+      "current_asset": {
+        "name": "Photo actuelle"
+      },
+      "current_photo_link": {
+        "name": "Lien vers la photo actuelle"
+      },
+      "prefetch_ready": {
+        "name": "Prérécupération prête"
+      },
+      "pause_reason": {
+        "name": "Raison de la pause",
+        "state": {
+          "running": "En cours",
+          "touch_window": "Fenêtre tactile",
+          "manual": "Pause manuelle"
+        }
+      },
+      "touch_deadline": {
+        "name": "Fin de la fenêtre tactile"
+      }
+    },
+    "select": {
+      "album": {
+        "name": "Album"
+      }
+    },
+    "switch": {
+      "pause": {
+        "name": "Pause"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options Jax Stream",
+        "data": {
+          "name": "Nom du flux",
+          "url": "URL Immich",
+          "api_key": "Clé API",
+          "album_id": "ID de l'album",
+          "remove_to_album_id": "ID de l'album de récupération (optionnel)",
+          "interval": "Intervalle de rafraîchissement (secondes)",
+          "landscape_only": "Mode paysage uniquement",
+          "shuffle": "Mélanger les photos",
+          "allow_insecure": "Autoriser HTTPS non sécurisé"
+        },
+        "data_description": {
+          "remove_to_album_id": "Les éléments supprimés de l'album source sont d'abord ajoutés ici comme mesure de sécurité avant la suppression. Nécessite les permissions albumAsset.create/delete et album.read sur la clé API ; asset.update est requis pour les notes.",
+          "shuffle": "Activé : ordre aléatoire (par défaut). Désactivé : ordre de l'album -- nécessite la permission album.read sur la clé API."
+        }
+      }
+    }
+  }
+}

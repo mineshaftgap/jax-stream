@@ -1,0 +1,119 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Jax Stream",
+        "data": {
+          "name": "Stream-Name",
+          "url": "Immich-URL",
+          "api_key": "API-Schlüssel",
+          "album_id": "Album-ID",
+          "remove_to_album_id": "Wiederherstellungsalbum-ID (optional)",
+          "interval": "Aktualisierungsintervall (Sekunden)",
+          "landscape_only": "Nur Querformat",
+          "shuffle": "Fotos mischen",
+          "allow_insecure": "Unsicheres HTTPS erlauben"
+        },
+        "data_description": {
+          "remove_to_album_id": "Aus dem Quellalbum entfernte Elemente werden zunächst hier als Sicherheitsmaßnahme vor der endgültigen Löschung hinzugefügt. Erfordert die Berechtigungen albumAsset.create/delete und album.read für den API-Schlüssel; asset.update wird für Bewertungen benötigt.",
+          "shuffle": "Aktiviert: Zufällige Reihenfolge (Standard). Deaktiviert: Album-Reihenfolge -- erfordert die Berechtigung album.read für den API-Schlüssel.",
+          "allow_insecure": "HTTPS-Zertifikatsprüfung für ein selbstsigniertes Immich-Zertifikat deaktivieren. Nur aktivieren, wenn Sie das Risiko verstehen."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zu Immich fehlgeschlagen. Überprüfen Sie die URL und ob der Server erreichbar ist.",
+      "invalid_auth": "Immich hat den API-Schlüssel oder das Album abgelehnt. Überprüfen Sie den API-Schlüssel und die Album-ID.",
+      "unknown": "Unerwarteter Fehler. Weitere Informationen finden Sie im Home Assistant-Protokoll."
+    },
+    "abort": {
+      "already_configured": "Dieses Immich-Album ist bereits konfiguriert."
+    }
+  },
+  "entity": {
+    "image": {
+      "next_image": {
+        "name": "Nächstes Bild"
+      },
+      "previous_image": {
+        "name": "Vorheriges Bild"
+      }
+    },
+    "button": {
+      "next": {
+        "name": "Nächstes Foto"
+      },
+      "previous": {
+        "name": "Vorheriges Foto"
+      },
+      "remove": {
+        "name": "Foto entfernen"
+      },
+      "rotate_cw": {
+        "name": "Im Uhrzeigersinn drehen"
+      },
+      "rotate_ccw": {
+        "name": "Gegen den Uhrzeigersinn drehen"
+      }
+    },
+    "number": {
+      "rating": {
+        "name": "Bewertung"
+      }
+    },
+    "sensor": {
+      "current_asset": {
+        "name": "Aktuelles Foto"
+      },
+      "current_photo_link": {
+        "name": "Link zum aktuellen Foto"
+      },
+      "prefetch_ready": {
+        "name": "Vorabladen bereit"
+      },
+      "pause_reason": {
+        "name": "Pausengrund",
+        "state": {
+          "running": "Läuft",
+          "touch_window": "Touch-Fenster",
+          "manual": "Manuelle Pause"
+        }
+      },
+      "touch_deadline": {
+        "name": "Ablauf Berührungsfenster"
+      }
+    },
+    "select": {
+      "album": {
+        "name": "Album"
+      }
+    },
+    "switch": {
+      "pause": {
+        "name": "Pause"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Jax Stream-Optionen",
+        "data": {
+          "name": "Stream-Name",
+          "url": "Immich-URL",
+          "api_key": "API-Schlüssel",
+          "album_id": "Album-ID",
+          "remove_to_album_id": "Wiederherstellungsalbum-ID (optional)",
+          "interval": "Aktualisierungsintervall (Sekunden)",
+          "landscape_only": "Nur Querformat",
+          "shuffle": "Fotos mischen",
+          "allow_insecure": "Unsicheres HTTPS erlauben"
+        },
+        "data_description": {
+          "remove_to_album_id": "Aus dem Quellalbum entfernte Elemente werden zunächst hier als Sicherheitsmaßnahme vor der endgültigen Löschung hinzugefügt. Erfordert die Berechtigungen albumAsset.create/delete und album.read für den API-Schlüssel; asset.update wird für Bewertungen benötigt.",
+          "shuffle": "Aktiviert: Zufällige Reihenfolge (Standard). Deaktiviert: Album-Reihenfolge -- erfordert die Berechtigung album.read für den API-Schlüssel."
+        }
+      }
+    }
+  }
+}

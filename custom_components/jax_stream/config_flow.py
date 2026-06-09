@@ -33,6 +33,7 @@ from .const import (
     CONF_LANDSCAPE_ONLY,
     CONF_NAME,
     CONF_REMOVE_TO_ALBUM_ID,
+    CONF_SHUFFLE,
     CONF_URL,
     DEFAULT_INTERVAL,
     DOMAIN,
@@ -101,6 +102,10 @@ def _build_schema(suggested: dict[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_LANDSCAPE_ONLY,
                 default=s.get(CONF_LANDSCAPE_ONLY, True),
+            ): BooleanSelector(),
+            vol.Optional(
+                CONF_SHUFFLE,
+                default=s.get(CONF_SHUFFLE, True),
             ): BooleanSelector(),
             vol.Optional(
                 CONF_ALLOW_INSECURE,

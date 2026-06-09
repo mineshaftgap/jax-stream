@@ -56,6 +56,7 @@ class JaxStreamAlbumSelect(CoordinatorEntity[JaxStreamCoordinator], SelectEntity
 
     _attr_has_entity_name = True
     _attr_translation_key = "album"
+    _attr_icon = "mdi:image-multiple"
 
     def __init__(
         self,

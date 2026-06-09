@@ -141,6 +141,11 @@ class ImmichClient:
             "Content-Type": "application/json",
         }
 
+    @property
+    def host(self) -> str:
+        """Immich server base URL (no trailing slash). Safe to expose -- no api_key."""
+        return self._host
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -351,6 +356,16 @@ class ImmichClient:
     async def list_albums(self) -> list:
         """GET /api/albums (D-03). Requires album.read scope; 403 -> ImmichAuthError."""
         return await self._get_json("/api/albums")
+
+    async def get_album_asset_ids(self, album_id: str) -> list[str]:
+        """Return asset IDs in album order via GET /api/albums/{id}.
+
+        Requires album.read scope. Returns IDs in the order Immich stores them
+        (respects the album's configured sort order, including manual ordering).
+        Raises ImmichAuthError on missing scope; ImmichConnError on network failure.
+        """
+        data = await self._get_json(f"/api/albums/{album_id}")
+        return [a["id"] for a in data.get("assets", [])]
 
     async def set_rating(self, asset_id: str, rating: int) -> None:
         """PUT /api/assets/{id} {"rating": N} (D-09, port of v41 cmd_rate)."""

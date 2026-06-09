@@ -163,6 +163,8 @@ def _make_stub(
     stub._head = 0
     stub._ring_size = 4
     stub._future_count = 0
+    stub._past_size = 3
+    stub._past_count = 0
     stub._slot_uuids = [None] * 4
     stub._slot_ratings = [0] * 4
     stub._state_json_path = "/tmp/jax_test_state.json"
@@ -194,16 +196,15 @@ def _make_stub(
     stub.async_request_refresh = AsyncMock(return_value=None)
     stub.async_update_listeners = MagicMock()
 
-    # Bridge write helpers: mock so action-method tests focus on gate state
-    stub._write_pause_bridge = AsyncMock(return_value=None)
-    stub._write_touch_bridge = AsyncMock(return_value=None)
-
     # Ring buffer method stubs: _fetch_next_slot is the new advance entry point
     # (replaces direct client.random_landscape calls in _async_update_data).
     # Returns (jpeg_bytes, asset_id, rating) as the real implementation does.
+    stub._stream_subdir = "test-stream"
     stub._fetch_next_slot = AsyncMock(return_value=(b"fake-jpeg", "asset-xyz", 3))
     stub._write_content_bridges = AsyncMock(return_value=None)
+    stub._refresh_adjacent_bytes = AsyncMock(return_value=None)
     stub._kick_backfill = MagicMock()
+    stub.async_next = AsyncMock(return_value=None)
 
     return stub
 
@@ -306,13 +307,18 @@ class TestActionMethods(unittest.IsolatedAsyncioTestCase):
         stub.async_request_refresh.assert_not_called()
 
     async def test_async_touch_arms_window_only(self):
-        """async_touch arms the 90s window but does NOT lift manual hold."""
+        """async_touch arms the 90s window but does NOT lift manual hold.
+
+        Fires async_update_listeners so the touch_deadline sensor pushes the new
+        deadline to subscribed frontends.
+        """
         stub = _make_stub(manual_paused=True)
         before = time.time()
         await JaxStreamCoordinator.async_touch(stub)
         self.assertGreater(stub._touch_deadline, before)
         # manual hold unchanged
         self.assertTrue(stub._manual_paused)
+        stub.async_update_listeners.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -350,13 +356,6 @@ class TestRecoveryFailSafe(unittest.IsolatedAsyncioTestCase):
         await JaxStreamCoordinator.async_remove(stub)
         self.assertEqual(stub.client.add_to_album.call_count, 0)
         stub.client.remove_from_album.assert_called_once()
-
-    async def test_remove_success_sets_force_refresh(self):
-        """Successful remove sets _force_refresh and calls async_request_refresh."""
-        stub = _make_stub()
-        await JaxStreamCoordinator.async_remove(stub)
-        self.assertTrue(stub._force_refresh)
-        stub.async_request_refresh.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +413,48 @@ class TestRotate(unittest.IsolatedAsyncioTestCase):
         stub.client.download_thumbnail = AsyncMock(side_effect=[b"old", b"new"])
         await JaxStreamCoordinator.async_rotate(stub, 90, asset_id="tap-time-id")
         self.assertEqual(stub.client.rotate.call_args[0][0], "tap-time-id")
+
+
+# ---------------------------------------------------------------------------
+# Tests: _refresh_adjacent_bytes past-window edge clearing (black-panel flash)
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshAdjacentBytesPastEdge(unittest.IsolatedAsyncioTestCase):
+    """At the past-window edge (_past_count == 0) the previous_image entity must
+    serve NO bytes, not a stale prev photo. Otherwise a back-swipe slides the
+    stale/black panel in (the black-panel/stale-photo flash). Proves the
+    coordinator clears _prev_bytes and bumps the token only when it changes."""
+
+    def _edge_stub(self):
+        """Stub parked at the past edge: no future, no past, real prev bytes."""
+        stub = _make_stub()
+        stub._future_count = 0       # skip the next branch entirely
+        stub._past_count = 0         # past edge -> prev must be cleared
+        stub._next_bytes = b"\xff\xd8\xff next"
+        stub.next_image_last_updated = None
+        return stub
+
+    async def test_clears_stale_prev_and_bumps_token(self):
+        """A leftover prev photo is dropped and the token is rotated so the
+        frontend refetches (gets a non-ok proxy response) and removes its panel."""
+        stub = self._edge_stub()
+        stub._prev_bytes = b"\xff\xd8\xff stale-prev"
+        stub.prev_image_last_updated = None
+        await JaxStreamCoordinator._refresh_adjacent_bytes(stub)
+        self.assertIsNone(stub._prev_bytes)
+        self.assertIsNotNone(stub.prev_image_last_updated)   # token rotated
+
+    async def test_no_spurious_bump_when_already_empty(self):
+        """When prev is already None, do NOT bump last_updated -- no phantom
+        state_changed -> no spurious frontend refetch (pub/sub contract)."""
+        stub = self._edge_stub()
+        stub._prev_bytes = None
+        sentinel = object()
+        stub.prev_image_last_updated = sentinel
+        await JaxStreamCoordinator._refresh_adjacent_bytes(stub)
+        self.assertIsNone(stub._prev_bytes)
+        self.assertIs(stub.prev_image_last_updated, sentinel)  # unchanged
 
 
 if __name__ == "__main__":
