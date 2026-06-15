@@ -87,6 +87,26 @@ class JaxStreamImage(CoordinatorEntity[JaxStreamCoordinator], ImageEntity):
         """
         return self.coordinator.image_bytes
 
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose photo metadata for the JS info overlay.
+
+        Delivered free in each state_changed event (same tick as the image
+        advance) so no extra API call is needed in JS. All values are str or
+        None; empty strings are normalised to None so JS can rely on truthiness.
+        """
+        info = self.coordinator._current_photo_info or {}
+        def _str(v: str) -> str | None:
+            return v if v else None
+        return {
+            "photo_date": _str(info.get("date", "")),
+            "photo_city": _str(info.get("city", "")),
+            "photo_country": _str(info.get("country", "")),
+            "photo_camera": _str(info.get("camera", "")),
+            "photo_album": _str(self.coordinator._album_name),
+            "is_favorite": self.coordinator._current_is_favorite,
+        }
+
     @callback
     def _handle_coordinator_update(self) -> None:
         """Sync image_last_updated from the coordinator on each tick (CORE-04).

@@ -5,6 +5,7 @@
     "remove": { "service": "mdi:trash-can" },
     "set_rating": { "service": "mdi:star" },
     "rotate": { "service": "mdi:rotate-right" },
+    "toggle_favorite": { "service": "mdi:heart" },
     "touch": { "service": "mdi:gesture-tap" },
     "pause": { "service": "mdi:pause-circle" },
     "resume": { "service": "mdi:play-circle" }

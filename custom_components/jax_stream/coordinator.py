@@ -148,6 +148,37 @@ def _atomic_write(dest: str, data: bytes) -> None:
     os.replace(tmp, dest)   # atomic rename; atomic so the view reads complete files
 
 
+def _compact_past_slots(slot_path_fn, head: int, ring_size: int, past_count: int) -> int:
+    """Close the past-window hole left by removing the CURRENT photo.
+
+    After async_next() advances off a removed current photo, that photo sits at
+    slot head-1 with the older history at head-2, head-3, ...  Rename each older
+    slot FILE forward by one (slot(head-2) -> slot(head-1), slot(head-3) ->
+    slot(head-2), ...), overwriting the removed photo's bytes and keeping the
+    remaining history CONTIGUOUS from head-1 -- so deep back-nav survives a
+    remove (only the removed photo drops out, not the whole back stack).
+
+    Stops at the first missing source file (honouring the contiguous-from-head-1
+    invariant the rest of the system relies on) and returns the number of slots
+    that remain valid -- the new past_count. The slot vacated by the last move
+    is removed from disk. Must run in the executor -- file I/O is blocking.
+    """
+    moved = 0
+    for k in range(1, past_count):
+        src = slot_path_fn((head - (k + 1)) % ring_size)
+        dst = slot_path_fn((head - k) % ring_size)
+        if not os.path.exists(src):
+            break
+        os.replace(src, dst)
+        moved += 1
+    vacated = slot_path_fn((head - (moved + 1)) % ring_size)
+    try:
+        os.remove(vacated)
+    except FileNotFoundError:
+        pass
+    return moved
+
+
 def _read_if_exists(path: str) -> bytes | None:
     """Return file bytes if path exists, else None.
 
@@ -275,6 +306,9 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self._force_refresh: bool = False          # explicit-call gate bypass (used by handle_refresh)
         self.current_asset_id: str | None = None
         self._current_rating: int = 0
+        self._current_is_favorite: bool = False
+        self._current_photo_info: dict = {}
+        self._album_name: str = ""
         # Photo-rotate: absolute angle (0/90/180/270) applied per asset this
         # session. asset.edit.read is not granted so the current edit cannot be
         # read back from Immich -- track in memory so CW/CCW taps accumulate.
@@ -299,6 +333,8 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self._slot_uuids: list[str | None] = [None] * self._ring_size
         # Per-slot rating cached at backfill time (index -> int).
         self._slot_ratings: list[int] = [0] * self._ring_size
+        # Per-slot photo info cached at backfill time (index -> dict | None).
+        self._slot_photo_info: list[dict | None] = [None] * self._ring_size
         # Backfill task state.
         self._backfill_task: asyncio.Task | None = None
         self._backfill_running: bool = False
@@ -307,6 +343,20 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         # Populated lazily on first advance; refreshed on wrap-around.
         self._ordered_assets: list[str] = []
         self._ordered_index: int = 0
+
+    @property
+    def menu_order_list(self) -> list[str]:
+        """Return the jaxmenu icon order as a list of action-key strings.
+
+        Parsed from the comma-separated settings.menu_order value. Falls back
+        to the full default order if unset or malformed.
+        """
+        from .const import DEFAULT_MENU_ORDER, MENU_ORDER_KEYS
+        raw = getattr(self.settings, "menu_order", DEFAULT_MENU_ORDER) or DEFAULT_MENU_ORDER
+        keys = [k.strip() for k in raw.split(",") if k.strip() and k.strip() in MENU_ORDER_KEYS]
+        if not keys:
+            return list(MENU_ORDER_KEYS)
+        return keys
 
     def _slot_path(self, index: int) -> str:
         """Return the absolute path for ring slot `index`."""
@@ -457,6 +507,12 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         # _previous_image have content the moment the platform creates them.
         await self._refresh_adjacent_bytes()
 
+        # Fetch album name once at setup so the photo info overlay can display it.
+        try:
+            self._album_name = await self.client.get_album_name(self.settings.album_id)
+        except ImmichError:
+            self._album_name = ""
+
     async def _async_update_data(self) -> bytes:
         """Organic-timer advance: promote the next ring slot into random.jpg.
 
@@ -488,7 +544,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
                 return self.image_bytes or b""
 
         try:
-            jpeg, asset_id, rating = await self._fetch_next_slot()
+            jpeg, asset_id, rating, photo_info = await self._fetch_next_slot()
         except (ImmichError, NoLandscapeSurvivor) as err:
             _LOGGER.warning("Jax Stream refresh failed, keeping last photo: %s", err)
             if self.image_bytes is None:
@@ -501,11 +557,17 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
             self._future_count -= 1
         self._slot_uuids[self._head] = asset_id
         self._slot_ratings[self._head] = rating
+        self._slot_photo_info[self._head] = photo_info
+        # Credit the outgoing photo as the nearest past slot (see async_next's
+        # SIDE EFFECT docstring) -- this is what makes deep back-nav possible; a
+        # remove must compact it back out (async_remove Case 1).
         self._past_count = min(self._past_count + 1, self._past_size)  # Phase 4
 
         await self.hass.async_add_executor_job(_atomic_write, self.disk_path, jpeg)
         self.current_asset_id = asset_id
         self._current_rating = rating
+        self._current_is_favorite = bool(photo_info.get("isFavorite", False))
+        self._current_photo_info = photo_info
         self.image_bytes = jpeg
         self.image_last_updated = dt_util.utcnow()
         await self._write_content_bridges(asset_id, rating)
@@ -520,8 +582,8 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self.hass.bus.async_fire(f"{DOMAIN}_advance", {"stream": self._stream_subdir})
         return jpeg
 
-    async def _fetch_next_slot(self) -> tuple[bytes, str, int]:
-        """Return (jpeg_bytes, asset_id, rating) for the next advance.
+    async def _fetch_next_slot(self) -> tuple[bytes, str, int, dict]:
+        """Return (jpeg_bytes, asset_id, rating, photo_info) for the next advance.
 
         Hot path: read from the pre-filled next slot file (no Immich call).
         Degraded path: on-demand Immich fetch when the ring is empty.
@@ -537,7 +599,8 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
             if data and data[:3] == JPEG_MAGIC:
                 uuid = self._slot_uuids[next_slot] or ""
                 rating = self._slot_ratings[next_slot]
-                return data, uuid, rating
+                photo_info = self._slot_photo_info[next_slot] or {}
+                return data, uuid, rating, photo_info
             # File vanished post-crash or JPEG invalid -- fall through to on-demand.
             # Do NOT decrement _future_count here: the caller decrements once after
             # the advance. The on-demand fetch overwrites this slot and replaces it,
@@ -557,7 +620,8 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         await self.hass.async_add_executor_job(_atomic_write, slot_file, jpeg)
         self._slot_uuids[next_slot] = asset_id
         self._slot_ratings[next_slot] = info["rating"]
-        return jpeg, asset_id, info["rating"]
+        self._slot_photo_info[next_slot] = info
+        return jpeg, asset_id, info["rating"], info
 
     async def _next_asset_id(self) -> str:
         """Return the next asset ID based on shuffle setting.
@@ -609,12 +673,20 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         version) of setting image_bytes / image_last_updated / calling
         async_update_listeners() directly, bypassing the DataUpdateCoordinator
         return-value path.
+
+        SIDE EFFECT (load-bearing for back-nav): advancing CREDITS the outgoing
+        photo (the old head) as the nearest past slot -- _past_count is bumped so
+        a later async_previous / swipe-right can promote it back. That is what
+        powers deep back-nav, but it means any caller that must NOT leave the
+        outgoing photo reachable has to purge it AFTER calling async_next (see
+        async_remove Case 1, which compacts the removed photo out of the past
+        window). Removing this credit would silently break back-nav.
         """
         self._manual_paused = False
         self._touch_deadline = time.time() + TOUCH_WINDOW_SECONDS
 
         try:
-            jpeg, asset_id, rating = await self._fetch_next_slot()
+            jpeg, asset_id, rating, photo_info = await self._fetch_next_slot()
         except (ImmichError, NoLandscapeSurvivor) as err:
             _LOGGER.warning("async_next fetch failed, keeping last photo: %s", err)
             self.async_update_listeners()
@@ -626,11 +698,17 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
             self._future_count -= 1
         self._slot_uuids[self._head] = asset_id
         self._slot_ratings[self._head] = rating
+        self._slot_photo_info[self._head] = photo_info
+        # Credit the outgoing photo as the nearest past slot (see async_next's
+        # SIDE EFFECT docstring) -- this is what makes deep back-nav possible; a
+        # remove must compact it back out (async_remove Case 1).
         self._past_count = min(self._past_count + 1, self._past_size)  # Phase 4
 
         await self.hass.async_add_executor_job(_atomic_write, self.disk_path, jpeg)
         self.current_asset_id = asset_id
         self._current_rating = rating
+        self._current_is_favorite = bool(photo_info.get("isFavorite", False))
+        self._current_photo_info = photo_info
         self.image_bytes = jpeg
         self.image_last_updated = dt_util.utcnow()
         await self._write_content_bridges(asset_id, rating)
@@ -661,6 +739,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
 
         uuid = self._slot_uuids[prev_slot] or ""
         rating = self._slot_ratings[prev_slot]
+        photo_info = self._slot_photo_info[prev_slot] or {}
 
         # Move head backward; old head becomes the first future slot.
         self._head = prev_slot
@@ -670,6 +749,8 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         await self.hass.async_add_executor_job(_atomic_write, self.disk_path, data)
         self.current_asset_id = uuid or None
         self._current_rating = rating
+        self._current_is_favorite = bool(photo_info.get("isFavorite", False))
+        self._current_photo_info = photo_info
         self.image_bytes = data
         self.image_last_updated = dt_util.utcnow()
         await self._write_content_bridges(uuid, rating)
@@ -709,6 +790,21 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
             raise ServiceValidationError("No current asset to rate")
         await self.client.set_rating(asset_id, rating)
         self._current_rating = rating
+        self.async_update_listeners()
+
+    async def async_toggle_favorite(self, asset_id: str | None = None) -> None:
+        """Toggle isFavorite on the current photo (asset.update scope).
+
+        asset_id overrides current_asset_id when provided (JS display-time cache,
+        same drift-prevention pattern as set_rating / remove).
+        """
+        if not asset_id:
+            asset_id = self.current_asset_id
+        if not asset_id:
+            raise ServiceValidationError("No current asset to favorite")
+        new_state = not self._current_is_favorite
+        await self.client.toggle_favorite(asset_id, new_state)
+        self._current_is_favorite = new_state
         self.async_update_listeners()
 
     async def async_remove(self, asset_id: str | None = None) -> None:
@@ -751,8 +847,45 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
 
         # Phase 3/4: ring-aware advance.
         if self._slot_uuids[self._head] == asset_id:
-            # Case 1: currently displayed photo removed -- inline-promote next slot.
+            # Case 1: currently displayed photo removed -- advance to the next
+            # slot, then PURGE the removed photo from the past window so it is not
+            # reachable by back-nav.
+            #
+            # async_next() advances head and (by design, for back-nav) credits the
+            # OLD head as the nearest past slot -- so without this purge the
+            # removed photo would be the very next swipe-right / async_previous
+            # target (it left the album but not the photo stream). We COMPACT
+            # rather than truncate: the removed photo is now head-1; shifting the
+            # older past slots forward by one closes the hole and PRESERVES deep
+            # back-nav (M=DEFAULT_PAST_COUNT) to the photos before it. Compacting
+            # keeps the "past window is contiguous from head-1" invariant the rest
+            # of the system depends on (restore, _refresh_adjacent_bytes), so only
+            # async_remove changes.
             await self.async_next()
+            moved = await self.hass.async_add_executor_job(
+                _compact_past_slots, self._slot_path, self._head,
+                self._ring_size, self._past_count,
+            )
+            # Mirror the on-disk slot shift in the in-memory uuid/rating arrays
+            # (k=1..moved, head-ward, so each source is read before it is itself
+            # overwritten as a later destination -- no temp copy needed).
+            for k in range(1, moved + 1):
+                src = (self._head - (k + 1)) % self._ring_size
+                dst = (self._head - k) % self._ring_size
+                self._slot_uuids[dst] = self._slot_uuids[src]
+                self._slot_ratings[dst] = self._slot_ratings[src]
+                self._slot_photo_info[dst] = self._slot_photo_info[src]
+            vacated = (self._head - (moved + 1)) % self._ring_size
+            self._slot_uuids[vacated] = None
+            self._slot_ratings[vacated] = 0
+            self._slot_photo_info[vacated] = None
+            self._past_count = moved
+            await self.hass.async_add_executor_job(
+                _write_state_json, self._state_json_path, self._head,
+                self._slot_uuids, self._past_count,
+            )
+            await self._refresh_adjacent_bytes()
+            self.async_update_listeners()
         else:
             # Case 2: search future and past slots for the removed UUID.
             dropped = False
@@ -761,6 +894,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
                 if self._slot_uuids[slot_idx] == asset_id:
                     self._slot_uuids[slot_idx] = None
                     self._slot_ratings[slot_idx] = 0
+                    self._slot_photo_info[slot_idx] = None
                     if k <= self._future_count:
                         # Future slot: truncate to just before the gap.
                         self._future_count = k - 1
@@ -915,6 +1049,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
                     await self.hass.async_add_executor_job(_atomic_write, slot_file, jpeg)
                     self._slot_uuids[target_slot] = asset_id
                     self._slot_ratings[target_slot] = info["rating"]
+                    self._slot_photo_info[target_slot] = info
                     await self.hass.async_add_executor_job(
                         _write_state_json, self._state_json_path,
                         self._head, self._slot_uuids, self._past_count,

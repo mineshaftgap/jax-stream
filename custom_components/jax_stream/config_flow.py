@@ -31,13 +31,20 @@ from .const import (
     CONF_API_KEY,
     CONF_INTERVAL,
     CONF_LANDSCAPE_ONLY,
+    CONF_MENU_ORDER,
     CONF_NAME,
+    CONF_PAST_COUNT,
+    CONF_PREFETCH_COUNT,
     CONF_REMOVE_TO_ALBUM_ID,
     CONF_SHUFFLE,
     CONF_URL,
     DEFAULT_INTERVAL,
+    DEFAULT_MENU_ORDER,
+    DEFAULT_PAST_COUNT,
+    DEFAULT_PREFETCH_COUNT,
     DOMAIN,
     MAX_INTERVAL,
+    MENU_ORDER_KEYS,
     MIN_INTERVAL,
 )
 from .immich import ImmichAuthError, ImmichClient, ImmichConnError
@@ -71,6 +78,16 @@ def _interval_selector() -> NumberSelector:
             max=MAX_INTERVAL,
             step=1,
             unit_of_measurement="s",
+            mode=NumberSelectorMode.BOX,
+        )
+    )
+
+def _count_selector(min_val: int, max_val: int) -> NumberSelector:
+    return NumberSelector(
+        NumberSelectorConfig(
+            min=min_val,
+            max=max_val,
+            step=1,
             mode=NumberSelectorMode.BOX,
         )
     )
@@ -111,8 +128,32 @@ def _build_schema(suggested: dict[str, Any]) -> vol.Schema:
                 CONF_ALLOW_INSECURE,
                 default=s.get(CONF_ALLOW_INSECURE, False),
             ): BooleanSelector(),
+            vol.Optional(
+                CONF_MENU_ORDER,
+                default=s.get(CONF_MENU_ORDER, DEFAULT_MENU_ORDER),
+            ): _TEXT,
+            vol.Optional(
+                CONF_PAST_COUNT,
+                default=s.get(CONF_PAST_COUNT, DEFAULT_PAST_COUNT),
+            ): _count_selector(0, 100),
+            vol.Optional(
+                CONF_PREFETCH_COUNT,
+                default=s.get(CONF_PREFETCH_COUNT, DEFAULT_PREFETCH_COUNT),
+            ): _count_selector(1, 10),
         }
     )
+
+
+def _validate_menu_order(value: str) -> bool:
+    """Return True if value is a non-empty comma-separated list of valid, unique menu keys."""
+    if not value or not value.strip():
+        return False
+    keys = [k.strip() for k in value.split(",") if k.strip()]
+    if not keys:
+        return False
+    if len(keys) != len(set(keys)):
+        return False
+    return all(k in MENU_ORDER_KEYS for k in keys)
 
 
 async def _validate(hass, user_input: dict[str, Any]) -> dict[str, str]:
@@ -160,7 +201,10 @@ class JaxStreamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            errors = await _validate(self.hass, user_input)
+            if not _validate_menu_order(user_input.get(CONF_MENU_ORDER, "")):
+                errors["base"] = "invalid_menu_order"
+            else:
+                errors = await _validate(self.hass, user_input)
             if not errors:
                 await self.async_set_unique_id(
                     f"{user_input[CONF_URL]}::{user_input[CONF_ALBUM_ID]}"
@@ -217,7 +261,10 @@ class JaxStreamOptionsFlow(config_entries.OptionsFlowWithReload):
         merged = {**self.config_entry.data, **self.config_entry.options}
 
         if user_input is not None:
-            errors = await _validate(self.hass, user_input)
+            if not _validate_menu_order(user_input.get(CONF_MENU_ORDER, "")):
+                errors["base"] = "invalid_menu_order"
+            else:
+                errors = await _validate(self.hass, user_input)
             if not errors:
                 if user_input.get(CONF_NAME):
                     self.hass.config_entries.async_update_entry(

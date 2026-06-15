@@ -35,10 +35,12 @@ from .const import (
     CONF_API_KEY,
     CONF_INTERVAL,
     CONF_LANDSCAPE_ONLY,
+    CONF_MENU_ORDER,
     CONF_REMOVE_TO_ALBUM_ID,
     CONF_SHUFFLE,
     CONF_URL,
     DEFAULT_INTERVAL,
+    DEFAULT_MENU_ORDER,
     DEFAULT_STREAM_SUBDIR,
     DOMAIN,
     JS_FILENAME,
@@ -55,6 +57,7 @@ from .const import (
     SERVICE_RESUME,
     SERVICE_ROTATE,
     SERVICE_SET_RATING,
+    SERVICE_TOGGLE_FAVORITE,
     SERVICE_TOUCH,
     ROTATE_ALLOWED_DELTAS,
     VA_DOMAIN,
@@ -122,6 +125,14 @@ SCHEMA_ROTATE = vol.Schema(
         vol.Optional("stream"): cv.string,
         # delta CW degrees: 90 = CW, 270 = CCW, 180 = flip
         vol.Required("angle"): vol.All(vol.Coerce(int), vol.In(ROTATE_ALLOWED_DELTAS)),
+        vol.Optional("asset_id"): cv.string,
+    }
+)
+
+SCHEMA_TOGGLE_FAVORITE = vol.Schema(
+    {
+        vol.Optional("entity_id"): cv.entity_id,
+        vol.Optional("stream"): cv.string,
         vol.Optional("asset_id"): cv.string,
     }
 )
@@ -200,6 +211,11 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         asset_id = call.data.get("asset_id") or None
         await coord.async_rotate(angle, asset_id)
 
+    async def handle_toggle_favorite(call: ServiceCall) -> None:
+        coord = await _resolve_coordinator(call)
+        asset_id = call.data.get("asset_id") or None
+        await coord.async_toggle_favorite(asset_id)
+
     async def handle_touch(call: ServiceCall) -> None:
         coord = await _resolve_coordinator(call)
         await coord.async_touch()
@@ -217,6 +233,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.services.async_register(DOMAIN, SERVICE_REMOVE, handle_remove, schema=SCHEMA_REMOVE)
     hass.services.async_register(DOMAIN, SERVICE_SET_RATING, handle_set_rating, schema=SCHEMA_SET_RATING)
     hass.services.async_register(DOMAIN, SERVICE_ROTATE, handle_rotate, schema=SCHEMA_ROTATE)
+    hass.services.async_register(DOMAIN, SERVICE_TOGGLE_FAVORITE, handle_toggle_favorite, schema=SCHEMA_TOGGLE_FAVORITE)
     hass.services.async_register(DOMAIN, SERVICE_TOUCH, handle_touch, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_PAUSE, handle_pause, schema=SCHEMA_STREAM_TARGET)
     hass.services.async_register(DOMAIN, SERVICE_RESUME, handle_resume, schema=SCHEMA_STREAM_TARGET)
@@ -315,6 +332,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
         stream_subdir=DEFAULT_STREAM_SUBDIR,  # fixed; per-stream subdirs deferred to backlog (D-08)
         remove_to_album_id=merged.get(CONF_REMOVE_TO_ALBUM_ID) or None,
         shuffle=merged.get(CONF_SHUFFLE, True),
+        menu_order=merged.get(CONF_MENU_ORDER, DEFAULT_MENU_ORDER),
     )
 
     coordinator = JaxStreamCoordinator(hass, entry, client, settings)

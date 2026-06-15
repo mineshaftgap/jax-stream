@@ -1,3 +1,6 @@
+# Service icons live in icons.json (services.<name>.service), NOT here.
+# An `icon:` key under a service fails hassfest (extra-key error that cascades
+# into a spurious target-required error) -- see DEVEL/deploy.md "hassfest gotchas".
 next:
   name: Next
   description: Advance to the next photo, lift manual pause, and re-arm the 90-second touch window (same as a swipe gesture).
@@ -160,5 +163,26 @@ resume:
     stream:
       name: Stream name
       description: The stream name (alternative to entity_id).
+      selector:
+        text:
+
+toggle_favorite:
+  name: Toggle favorite
+  description: Toggle the Immich favorite flag on the current photo. Requires the asset.update API-key scope.
+  fields:
+    entity_id:
+      name: Entity
+      description: The image entity of the stream.
+      selector:
+        entity:
+          domain: image
+    stream:
+      name: Stream name
+      description: The stream name (alternative to entity_id).
+      selector:
+        text:
+    asset_id:
+      name: Asset ID
+      description: Immich asset UUID of the photo to favorite. When omitted the coordinator uses its current_asset_id. Supply this from the JS display-time cache to prevent drift.
       selector:
         text:

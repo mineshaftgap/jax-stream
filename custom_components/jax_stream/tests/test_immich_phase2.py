@@ -143,18 +143,28 @@ class TestGetAssetInfo(unittest.IsolatedAsyncioTestCase):
     """get_asset_info returns rating (from exifInfo) AND isEdited (top-level)."""
 
     async def test_returns_rating_and_isedited(self):
-        resp = _mock_resp(json_data={"exifInfo": {"rating": 2}, "isEdited": True})
+        resp = _mock_resp(json_data={
+            "exifInfo": {"rating": 2, "make": "Apple", "model": "iPhone 15"},
+            "isEdited": True,
+            "localDateTime": "2024-03-15T10:00:00.000Z",
+        })
         session = _session_with("get", resp)
         client = _make_client(session)
         result = await client.get_asset_info("abc")
-        self.assertEqual(result, {"rating": 2, "isEdited": True})
+        self.assertEqual(result["rating"], 2)
+        self.assertEqual(result["isEdited"], True)
+        self.assertEqual(result["date"], "2024-03-15T10:00:00.000Z")
+        self.assertEqual(result["camera"], "Apple iPhone 15")
 
     async def test_defaults_when_fields_absent(self):
         resp = _mock_resp(json_data={})
         session = _session_with("get", resp)
         client = _make_client(session)
         result = await client.get_asset_info("abc")
-        self.assertEqual(result, {"rating": 0, "isEdited": False})
+        self.assertEqual(result["rating"], 0)
+        self.assertEqual(result["isEdited"], False)
+        self.assertEqual(result["date"], "")
+        self.assertEqual(result["camera"], "")
 
 
 class TestRotate(unittest.IsolatedAsyncioTestCase):

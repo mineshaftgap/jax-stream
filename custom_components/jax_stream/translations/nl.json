@@ -12,18 +12,21 @@
           "interval": "Verversingsinterval (seconden)",
           "landscape_only": "Alleen liggend formaat",
           "shuffle": "Foto's willekeurig afspelen",
-          "allow_insecure": "Onbeveiligde HTTPS toestaan"
+          "allow_insecure": "Onbeveiligde HTTPS toestaan",
+          "menu_order": "Volgorde van jaxmenu-knoppen"
         },
         "data_description": {
           "remove_to_album_id": "Elementen die uit het bronalbum zijn verwijderd, worden hier eerst toegevoegd als veiligheidsmaatregel vóór definitieve verwijdering. Vereist de machtigingen albumAsset.create/delete en album.read op de API-sleutel; asset.update is nodig voor beoordelingen.",
           "shuffle": "Aan: willekeurige volgorde (standaard). Uit: albumvolgorde -- vereist de machtiging album.read op de API-sleutel.",
-          "allow_insecure": "HTTPS-certificaatverificatie uitschakelen voor een Immich-instantie met een zelfondertekend certificaat. Alleen inschakelen als u het risico begrijpt."
+          "allow_insecure": "HTTPS-certificaatverificatie uitschakelen voor een Immich-instantie met een zelfondertekend certificaat. Alleen inschakelen als u het risico begrijpt.",
+          "menu_order": "Comma-separated order of the jaxmenu flyout buttons. Valid keys: pause, remove, rate, rotccw, rotcw, info. Omit a key to hide that button. Default: pause,remove,rate,rotccw,rotcw,info"
         }
       }
     },
     "error": {
       "cannot_connect": "Verbinding met Immich mislukt. Controleer de URL en of de server bereikbaar is.",
       "invalid_auth": "Immich heeft de API-sleutel of het album geweigerd. Controleer de API-sleutel en het album-ID.",
+      "invalid_menu_order": "Invalid button order. Use comma-separated keys from: pause, remove, rate, rotccw, rotcw, info. No duplicates.",
       "unknown": "Onverwachte fout. Raadpleeg het Home Assistant-logboek."
     },
     "abort": {
@@ -107,11 +110,13 @@
           "interval": "Verversingsinterval (seconden)",
           "landscape_only": "Alleen liggend formaat",
           "shuffle": "Foto's willekeurig afspelen",
-          "allow_insecure": "Onbeveiligde HTTPS toestaan"
+          "allow_insecure": "Onbeveiligde HTTPS toestaan",
+          "menu_order": "Volgorde van jaxmenu-knoppen"
         },
         "data_description": {
           "remove_to_album_id": "Elementen die uit het bronalbum zijn verwijderd, worden hier eerst toegevoegd als veiligheidsmaatregel vóór definitieve verwijdering. Vereist de machtigingen albumAsset.create/delete en album.read op de API-sleutel; asset.update is nodig voor beoordelingen.",
-          "shuffle": "Aan: willekeurige volgorde (standaard). Uit: albumvolgorde -- vereist de machtiging album.read op de API-sleutel."
+          "shuffle": "Aan: willekeurige volgorde (standaard). Uit: albumvolgorde -- vereist de machtiging album.read op de API-sleutel.",
+          "menu_order": "Comma-separated order of the jaxmenu flyout buttons. Valid keys: pause, remove, rate, rotccw, rotcw, info. Omit a key to hide that button. Default: pause,remove,rate,rotccw,rotcw,info"
         }
       }
     }

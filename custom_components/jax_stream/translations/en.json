@@ -12,18 +12,25 @@
           "interval": "Refresh interval (seconds)",
           "landscape_only": "Landscape only",
           "shuffle": "Shuffle photos",
-          "allow_insecure": "Allow insecure HTTPS"
+          "allow_insecure": "Allow insecure HTTPS",
+          "menu_order": "Jaxmenu button order",
+          "past_count": "Back-nav depth (photos)",
+          "prefetch_count": "Prefetch depth (photos)"
         },
         "data_description": {
           "remove_to_album_id": "Assets removed from the source album are added here first as a fail-safe before deletion. Requires albumAsset.create/delete and album.read scopes on the API key; asset.update is needed for ratings.",
           "shuffle": "On: random order (default). Off: album order -- requires album.read scope on the API key.",
-          "allow_insecure": "Disable HTTPS certificate verification for a self-signed Immich. Leave off unless you understand the risk."
+          "allow_insecure": "Disable HTTPS certificate verification for a self-signed Immich. Leave off unless you understand the risk.",
+          "menu_order": "Comma-separated order of the jaxmenu flyout buttons. Valid keys: pause, remove, rate, rotccw, rotcw, info, favorite. Omit a key to hide that button. Default: pause,remove,rate,rotccw,rotcw,info,favorite",
+          "past_count": "How many previously shown photos to keep loaded for instant back-navigation. Higher values use more disk. Default: 20.",
+          "prefetch_count": "How many upcoming photos to preload in the background. Higher values use more disk and network. Default: 3."
         }
       }
     },
     "error": {
       "cannot_connect": "Failed to connect to Immich. Check the URL and that the server is reachable.",
       "invalid_auth": "Immich rejected the API key or album. Check the API key and album ID.",
+      "invalid_menu_order": "Invalid button order. Use comma-separated keys from: pause, remove, rate, rotccw, rotcw, info, favorite. No duplicates.",
       "unknown": "Unexpected error. See the Home Assistant log."
     },
     "abort": {
@@ -107,11 +114,17 @@
           "interval": "Refresh interval (seconds)",
           "landscape_only": "Landscape only",
           "shuffle": "Shuffle photos",
-          "allow_insecure": "Allow insecure HTTPS"
+          "allow_insecure": "Allow insecure HTTPS",
+          "menu_order": "Jaxmenu button order",
+          "past_count": "Back-nav depth (photos)",
+          "prefetch_count": "Prefetch depth (photos)"
         },
         "data_description": {
           "remove_to_album_id": "Assets removed from the source album are added here first as a fail-safe before deletion. Requires albumAsset.create/delete and album.read scopes on the API key; asset.update is needed for ratings.",
-          "shuffle": "On: random order (default). Off: album order -- requires album.read scope on the API key."
+          "shuffle": "On: random order (default). Off: album order -- requires album.read scope on the API key.",
+          "menu_order": "Comma-separated order of the jaxmenu flyout buttons. Valid keys: pause, remove, rate, rotccw, rotcw, info, favorite. Omit a key to hide that button. Default: pause,remove,rate,rotccw,rotcw,info,favorite",
+          "past_count": "How many previously shown photos to keep loaded for instant back-navigation. Higher values use more disk. Default: 20.",
+          "prefetch_count": "How many upcoming photos to preload in the background. Higher values use more disk and network. Default: 3."
         }
       }
     }

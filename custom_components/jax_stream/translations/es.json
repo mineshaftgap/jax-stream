@@ -12,18 +12,21 @@
           "interval": "Intervalo de actualización (segundos)",
           "landscape_only": "Solo orientación horizontal",
           "shuffle": "Mezclar fotos",
-          "allow_insecure": "Permitir HTTPS no seguro"
+          "allow_insecure": "Permitir HTTPS no seguro",
+          "menu_order": "Orden de botones del jaxmenu"
         },
         "data_description": {
           "remove_to_album_id": "Los elementos eliminados del álbum de origen se añaden aquí primero como medida de seguridad antes de la eliminación definitiva. Requiere los permisos albumAsset.create/delete y album.read en la clave API; asset.update es necesario para las valoraciones.",
           "shuffle": "Activado: orden aleatorio (predeterminado). Desactivado: orden del álbum -- requiere el permiso album.read en la clave API.",
-          "allow_insecure": "Desactivar la verificación del certificado HTTPS para una instancia de Immich con certificado autofirmado. No activar salvo que entienda el riesgo."
+          "allow_insecure": "Desactivar la verificación del certificado HTTPS para una instancia de Immich con certificado autofirmado. No activar salvo que entienda el riesgo.",
+          "menu_order": "Comma-separated order of the jaxmenu flyout buttons. Valid keys: pause, remove, rate, rotccw, rotcw, info. Omit a key to hide that button. Default: pause,remove,rate,rotccw,rotcw,info"
         }
       }
     },
     "error": {
       "cannot_connect": "No se pudo conectar a Immich. Compruebe la URL y que el servidor sea accesible.",
       "invalid_auth": "Immich rechazó la clave API o el álbum. Compruebe la clave API y el ID del álbum.",
+      "invalid_menu_order": "Invalid button order. Use comma-separated keys from: pause, remove, rate, rotccw, rotcw, info. No duplicates.",
       "unknown": "Error inesperado. Consulte el registro de Home Assistant."
     },
     "abort": {
@@ -107,11 +110,13 @@
           "interval": "Intervalo de actualización (segundos)",
           "landscape_only": "Solo orientación horizontal",
           "shuffle": "Mezclar fotos",
-          "allow_insecure": "Permitir HTTPS no seguro"
+          "allow_insecure": "Permitir HTTPS no seguro",
+          "menu_order": "Orden de botones del jaxmenu"
         },
         "data_description": {
           "remove_to_album_id": "Los elementos eliminados del álbum de origen se añaden aquí primero como medida de seguridad antes de la eliminación definitiva. Requiere los permisos albumAsset.create/delete y album.read en la clave API; asset.update es necesario para las valoraciones.",
-          "shuffle": "Activado: orden aleatorio (predeterminado). Desactivado: orden del álbum -- requiere el permiso album.read en la clave API."
+          "shuffle": "Activado: orden aleatorio (predeterminado). Desactivado: orden del álbum -- requiere el permiso album.read en la clave API.",
+          "menu_order": "Comma-separated order of the jaxmenu flyout buttons. Valid keys: pause, remove, rate, rotccw, rotcw, info. Omit a key to hide that button. Default: pause,remove,rate,rotccw,rotcw,info"
         }
       }
     }

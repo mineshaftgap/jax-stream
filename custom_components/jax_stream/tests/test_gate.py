@@ -15,7 +15,9 @@ ASCII only -- no Unicode.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
 import time
 import types
 import unittest
@@ -151,6 +153,8 @@ def _make_stub(
     stub._force_refresh = force
     stub.current_asset_id = current_asset_id
     stub._current_rating = 0
+    stub._current_photo_info = {}
+    stub._album_name = ""
     stub._rotate_angles = {}
     stub._bridge_dir = "/tmp/jax_test_bridge"
     stub.disk_path = "/tmp/jax_test_bridge/random.jpg"
@@ -167,6 +171,7 @@ def _make_stub(
     stub._past_count = 0
     stub._slot_uuids = [None] * 4
     stub._slot_ratings = [0] * 4
+    stub._slot_photo_info = [None] * 4
     stub._state_json_path = "/tmp/jax_test_state.json"
 
     # Mock hass: async_add_executor_job returns awaitable via AsyncMock side_effect
@@ -179,7 +184,7 @@ def _make_stub(
     client.random_landscape = AsyncMock(return_value="asset-xyz")
     client.download_thumbnail = AsyncMock(return_value=b"raw-bytes")
     client.get_asset_rating = AsyncMock(return_value=3)
-    client.get_asset_info = AsyncMock(return_value={"rating": 3, "isEdited": False})
+    client.get_asset_info = AsyncMock(return_value={"rating": 3, "isEdited": False, "date": "", "city": "", "country": "", "camera": ""})
     client.set_rating = AsyncMock(return_value=None)
     client.rotate = AsyncMock(return_value=None)
     client.add_to_album = AsyncMock(return_value=None)
@@ -198,9 +203,9 @@ def _make_stub(
 
     # Ring buffer method stubs: _fetch_next_slot is the new advance entry point
     # (replaces direct client.random_landscape calls in _async_update_data).
-    # Returns (jpeg_bytes, asset_id, rating) as the real implementation does.
+    # Returns (jpeg_bytes, asset_id, rating, photo_info) as the real implementation does.
     stub._stream_subdir = "test-stream"
-    stub._fetch_next_slot = AsyncMock(return_value=(b"fake-jpeg", "asset-xyz", 3))
+    stub._fetch_next_slot = AsyncMock(return_value=(b"fake-jpeg", "asset-xyz", 3, {}))
     stub._write_content_bridges = AsyncMock(return_value=None)
     stub._refresh_adjacent_bytes = AsyncMock(return_value=None)
     stub._kick_backfill = MagicMock()
@@ -455,6 +460,102 @@ class TestRefreshAdjacentBytesPastEdge(unittest.IsolatedAsyncioTestCase):
         await JaxStreamCoordinator._refresh_adjacent_bytes(stub)
         self.assertIsNone(stub._prev_bytes)
         self.assertIs(stub.prev_image_last_updated, sentinel)  # unchanged
+
+
+class TestRemovePurgesFromRing(unittest.IsolatedAsyncioTestCase):
+    """Removing the CURRENTLY displayed photo must purge it from the past-window
+    ring, not just the album -- otherwise swipe-right / async_previous promotes
+    the just-removed photo right back (it left the album but not the stream).
+
+    The purge COMPACTS the ring (shifts older past slots forward to close the
+    hole) so deep back-nav to the photos BEFORE the removed one is PRESERVED.
+    These tests run the real async_next + on-disk _compact_past_slots, so they
+    use a temp window dir with real slot files."""
+
+    JPEG = b"\xff\xd8\xff"  # JPEG magic so any slot validation passes
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="jax_ring_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _slot_file(self, idx):
+        return os.path.join(self._tmp, "window", f"slot_{idx:02d}.jpg")
+
+    async def _real_exec(self, fn, *args):
+        """Executor that actually runs the file-I/O helpers (compact, writes)."""
+        return fn(*args)
+
+    def _ring_stub(self, ring_size, head, slot_uuids, future_count, past_count):
+        """Stub viewing slot_uuids[head] at head, with real slot files on disk and
+        the REAL async_next so the advance mutates the ring like production."""
+        stub = _make_stub(current_asset_id=slot_uuids[head])
+        stub._ring_size = ring_size
+        stub._past_size = 20
+        stub._head = head
+        stub._slot_uuids = list(slot_uuids)
+        stub._slot_ratings = [0] * ring_size
+        stub._slot_photo_info = [None] * ring_size
+        stub._future_count = future_count
+        stub._past_count = past_count
+        stub._window_dir = os.path.join(self._tmp, "window")
+        stub.disk_path = os.path.join(self._tmp, "random.jpg")
+        stub._state_json_path = os.path.join(self._tmp, "state.json")
+        # Real file I/O so _compact_past_slots and the writes actually run.
+        stub.hass.async_add_executor_job = AsyncMock(side_effect=self._real_exec)
+        # Bind the real slot-path + advance so production logic executes.
+        stub._slot_path = lambda i: JaxStreamCoordinator._slot_path(stub, i)
+        stub.async_next = lambda: JaxStreamCoordinator.async_next(stub)
+        # New current comes from _fetch_next_slot -- a fresh uuid, never a ring id.
+        stub._fetch_next_slot = AsyncMock(return_value=(self.JPEG + b"Y", "Y", 0, {}))
+        # Lay down a slot file for every populated slot.
+        os.makedirs(stub._window_dir, exist_ok=True)
+        for i, uid in enumerate(slot_uuids):
+            if uid is not None:
+                with open(self._slot_file(i), "wb") as fh:
+                    fh.write(self.JPEG + uid.encode())
+        return stub
+
+    async def test_compact_preserves_deep_back_nav(self):
+        """Removing the current photo drops only it; the older history shifts
+        forward and stays reachable (past_count preserved, no gap)."""
+        # ring_size 8, head=3 viewing X; behind: P1(2), P2(1); ahead: F1(4).
+        stub = self._ring_stub(
+            ring_size=8, head=3,
+            slot_uuids=[None, "P2", "P1", "X", "F1", None, None, None],
+            future_count=1, past_count=2,
+        )
+        await JaxStreamCoordinator.async_remove(stub)
+        # Advanced off X to the fetched next photo.
+        self.assertEqual(stub._head, 4)
+        self.assertEqual(stub.current_asset_id, "Y")
+        # X is gone from every slot...
+        self.assertNotIn("X", stub._slot_uuids)
+        # ...and the back stack is intact: head-1 == P1, head-2 == P2.
+        self.assertEqual(stub._slot_uuids[(stub._head - 1) % 8], "P1")
+        self.assertEqual(stub._slot_uuids[(stub._head - 2) % 8], "P2")
+        self.assertEqual(stub._past_count, 2)  # depth preserved, not truncated
+        # Files moved too -- head-1 file carries P1's bytes, X's bytes overwritten.
+        with open(self._slot_file((stub._head - 1) % 8), "rb") as fh:
+            self.assertEqual(fh.read(), self.JPEG + b"P1")
+        # Source album removal fired for the right asset.
+        stub.client.remove_from_album.assert_called_once()
+        self.assertEqual(stub.client.remove_from_album.call_args[0][1], "X")
+
+    async def test_remove_current_no_prior_history(self):
+        """With no past slots before the remove, the removed photo is the only
+        thing async_next credits; compact must drive past_count back to 0."""
+        stub = self._ring_stub(
+            ring_size=8, head=3,
+            slot_uuids=[None, None, None, "X", "F1", None, None, None],
+            future_count=1, past_count=0,
+        )
+        await JaxStreamCoordinator.async_remove(stub)
+        self.assertEqual(stub._past_count, 0)
+        self.assertNotIn("X", stub._slot_uuids)
+        # X's old slot file is gone (removed, not left dangling).
+        self.assertFalse(os.path.exists(self._slot_file(3)))
 
 
 if __name__ == "__main__":

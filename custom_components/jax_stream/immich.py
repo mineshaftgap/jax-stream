@@ -388,16 +388,34 @@ class ImmichClient:
         return int((data.get("exifInfo") or {}).get("rating") or 0)
 
     async def get_asset_info(self, asset_id: str) -> dict:
-        """GET /api/assets/{id} -> {'rating': int, 'isEdited': bool}.
+        """GET /api/assets/{id} -> rating, isEdited, and photo info fields.
 
         Single round-trip the coordinator runs once per advance: rating drives
         the rate overlay (Pitfall 4: rating is at exifInfo.rating) and isEdited
         selects the rotated rendition so a rotate sticks when the photo recurs
         in the random rotation (both fields verified present on live Immich 2.5.6).
+        Also extracts localDateTime, city, country, and camera make/model for
+        the photo info overlay (no extra API call -- same response body).
         """
         data = await self._get_json(f"/api/assets/{asset_id}")
-        rating = int((data.get("exifInfo") or {}).get("rating") or 0)
-        return {"rating": rating, "isEdited": bool(data.get("isEdited"))}
+        ex = data.get("exifInfo") or {}
+        rating = int(ex.get("rating") or 0)
+        camera_parts = [ex.get("make"), ex.get("model")]
+        camera = " ".join(p for p in camera_parts if p)
+        return {
+            "rating": rating,
+            "isEdited": bool(data.get("isEdited")),
+            "isFavorite": bool(data.get("isFavorite")),
+            "date": data.get("localDateTime") or "",
+            "city": ex.get("city") or "",
+            "country": ex.get("country") or "",
+            "camera": camera,
+        }
+
+    async def get_album_name(self, album_id: str) -> str:
+        """GET /api/albums/{id} -> albumName string (empty on error)."""
+        data = await self._get_json(f"/api/albums/{album_id}")
+        return data.get("albumName") or ""
 
     async def check_asset_exists(self, asset_id: str) -> bool:
         """HEAD /api/assets/{id} -- lightweight existence check (Phase 3).
@@ -426,6 +444,10 @@ class ImmichClient:
             raise ImmichConnError(
                 f"Connection error on HEAD /api/assets/{asset_id}: {exc}"
             ) from exc
+
+    async def toggle_favorite(self, asset_id: str, is_favorite: bool) -> None:
+        """PUT /api/assets/{id} {"isFavorite": bool} (asset.update scope)."""
+        await self._put_json(f"/api/assets/{asset_id}", {"isFavorite": is_favorite})
 
     async def rotate(self, asset_id: str, angle: int) -> None:
         """PUT /api/assets/{id}/edits non-destructive rotate (asset.edit.create).

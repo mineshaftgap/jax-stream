@@ -64,7 +64,10 @@
 
   var startX = 0, startY = 0, startT = 0, tracking = false, lastFire = 0;
   var ratingMenuOverlay = null;
+  var infoOverlay = null;
   var _currentRating = 0;
+  var _currentIsFavorite = false;
+  var _currentPhotoInfo = null;
   var lastPhotoSrc = null;
   // Photos are all served as the same overwrite-in-place file (random.jpg); the
   // live photo therefore has no stable server URL once it advances. captureLive
@@ -147,8 +150,15 @@
 
   function onClockView() {
     try {
+      // Anchor to the VA dashboard prefix, NOT a bare substring. The devices
+      // render the kiosk views at /view-assist/clock(alt) and
+      // /view-assist/jax-stream; a desktop Lovelace dashboard at
+      // /lovelace/jax-stream (e.g. one holding jax-stream-cards) also contains
+      // the token "jax-stream" and would otherwise false-positive, flashing the
+      // jaxmenu trigger during the load window when inKiosk() falls back to true.
       var p = location.pathname.toLowerCase();
-      return p.indexOf("clock") !== -1 || p.indexOf("jax-stream") !== -1;
+      return p.indexOf("/view-assist/clock") !== -1 ||
+             p.indexOf("/view-assist/jax-stream") !== -1;
     }
     catch (e) { return false; }
   }
@@ -469,6 +479,73 @@
     overlay.appendChild(title);
     overlay.appendChild(starRow);
     overlay.appendChild(unrateBtn);
+    document.body.appendChild(overlay);
+  }
+
+  function openPhotoInfo(info) {
+    if (infoOverlay) return;
+    tracking = false;
+    hideHint();
+    var overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;top:0;right:0;bottom:0;left:0;z-index:100000;" +
+      "background:rgba(0,0,0,0.78);display:flex;flex-direction:column;" +
+      "align-items:flex-start;justify-content:center;padding:6vw 8vw;gap:4.5vh;";
+    overlay.addEventListener("touchstart", function(e) { e.stopPropagation(); }, { capture: true });
+    overlay.addEventListener("touchmove", function(e) { e.stopPropagation(); if (e.cancelable) e.preventDefault(); }, { capture: true, passive: false });
+    overlay.addEventListener("mousedown", function(e) { e.stopPropagation(); }, true);
+    infoOverlay = overlay;
+    var openedAt = Date.now();
+    function cleanup() {
+      infoOverlay = null;
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+    overlay.addEventListener("touchend", function() { if (Date.now() - openedAt > 200) cleanup(); }, false);
+    overlay.addEventListener("mouseup", function() { if (Date.now() - openedAt > 200) cleanup(); }, false);
+
+    function formatDate(dt) {
+      if (!dt) return null;
+      var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      var m = dt.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (!m) return dt;
+      return months[parseInt(m[2], 10) - 1] + " " + parseInt(m[3], 10) + ", " + m[1];
+    }
+
+    function addRow(svgPath, text) {
+      if (!text) return;
+      var row = document.createElement("div");
+      row.style.cssText = "display:flex;align-items:center;gap:4vw;width:100%;";
+      var icon = document.createElement("div");
+      icon.style.cssText = "flex-shrink:0;width:7vw;height:7vw;display:flex;align-items:center;justify-content:center;opacity:0.7;";
+      icon.innerHTML = '<svg width="100%" height="100%" viewBox="0 0 24 24" fill="none">' + svgPath + "</svg>";
+      var label = document.createElement("div");
+      label.textContent = text;
+      label.style.cssText = "color:#fff;font:400 4.2vh/1.35 sans-serif;flex:1;word-break:break-word;";
+      row.appendChild(icon);
+      row.appendChild(label);
+      overlay.appendChild(row);
+    }
+
+    var dateStr = formatDate(info.date || null);
+    var ICON_DATE = '<path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+    var ICON_LOC  = '<path d="M12 2a7 7 0 0 1 7 7c0 5-7 13-7 13S5 14 5 9a7 7 0 0 1 7-7z" stroke="white" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="9" r="2.5" stroke="white" stroke-width="2"/>';
+    var ICON_CAM  = '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" stroke="white" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13" r="4" stroke="white" stroke-width="2"/>';
+    var ICON_ALB  = '<rect x="2" y="3" width="20" height="18" rx="2" stroke="white" stroke-width="2"/><path d="M8 7h8M8 12h5" stroke="white" stroke-width="2" stroke-linecap="round"/>';
+
+    var loc = [info.city, info.country].filter(Boolean).join(", ");
+    addRow(ICON_DATE, dateStr);
+    addRow(ICON_LOC,  loc || null);
+    addRow(ICON_CAM,  info.camera || null);
+    addRow(ICON_ALB,  info.album || null);
+
+    // Show a hint if no fields are populated (first boot, before first advance).
+    if (!dateStr && !loc && !info.camera && !info.album) {
+      var hint = document.createElement("div");
+      hint.textContent = "No photo info available yet";
+      hint.style.cssText = "color:rgba(255,255,255,0.5);font:400 4vh/1 sans-serif;";
+      overlay.appendChild(hint);
+    }
+
     document.body.appendChild(overlay);
   }
 
@@ -942,17 +1019,10 @@
       ov.setAttribute("data-jax-slide", "1");
       ov.style.cssText =
         "position:fixed;inset:0;z-index:9000;overflow:hidden;pointer-events:none;background:#1c1c1c;";
-      var common =
-        "position:absolute;top:0;left:0;width:100%;height:100%;" +
-        "background-repeat:no-repeat;background-size:" + card.size + ";" +
-        "background-position:" + card.position + ";";
-      var outg = document.createElement("div");
-      outg.style.cssText = common +
-        "background-image:" + card.image + ";transform:translateX(0);";
-      var inc = document.createElement("div");
-      inc.style.cssText = common +
-        'background-image:url("' + newUrl + '");transform:translateX(' +
-        (dirSign > 0 ? "100%" : "-100%") + ");";
+      var outg = buildGesturePanel(card.image, card);
+      outg.style.transform = "translateX(0)";
+      var inc = buildGesturePanel('url("' + newUrl + '")', card);
+      inc.style.transform = "translateX(" + (dirSign > 0 ? "100%" : "-100%") + ")";
       ov.appendChild(outg);
       ov.appendChild(inc);
       host.appendChild(ov);
@@ -1479,7 +1549,7 @@
   // the touch window -- e.g. the unpause indicator must not re-suppress).
   function isJaxUi(node) {
     if (!node) return false;
-    var ctrls = [jaxMenuTrigger, pauseIndicator, touchIndicator, jaxMenuOverlay, confirmOverlay, ratingMenuOverlay];
+    var ctrls = [jaxMenuTrigger, pauseIndicator, touchIndicator, jaxMenuOverlay, confirmOverlay, ratingMenuOverlay, infoOverlay];
     for (var i = 0; i < ctrls.length; i++) {
       var c = ctrls[i];
       if (c && (c === node || (c.contains && c.contains(node)))) return true;
@@ -1499,11 +1569,11 @@
       if (el.style.zIndex === "99991" && el.parentNode) el.parentNode.removeChild(el);
     });
     pauseIndicator = document.createElement("div");
-    // Aligned with the flyout's first item (left:11 + translateX 63) so it reads
+    // Aligned with the flyout's first item (left:11 + 1 button-width) so it reads
     // as the pause control persisting just right of the jaxicon.
     pauseIndicator.style.cssText =
       "position:fixed;top:15px;left:11px;width:7vw;height:7vw;" +
-      "transform:translateX(63px);background:rgba(0,0,0,0.45);border-radius:10px;" +
+      "transform:translateX(" + (Math.round(window.innerWidth * 0.07) + 4) + "px);background:rgba(0,0,0,0.45);border-radius:10px;" +
       "display:none;align-items:center;justify-content:center;" +
       "z-index:99991;cursor:pointer;user-select:none;";
     pauseIndicator.innerHTML = RESUME_SVG;  // shows the resume affordance
@@ -1550,7 +1620,7 @@
     touchIndicator = document.createElement("div");
     touchIndicator.style.cssText =
       "position:fixed;top:15px;left:11px;width:7vw;height:7vw;" +
-      "transform:translateX(63px);background:rgba(0,0,0,0.45);border-radius:10px;" +
+      "transform:translateX(" + (Math.round(window.innerWidth * 0.07) + 4) + "px);background:rgba(0,0,0,0.45);border-radius:10px;" +
       "display:none;align-items:center;justify-content:center;" +
       "z-index:99988;cursor:pointer;user-select:none;";
     touchIndicator.innerHTML = TOUCH_RING_SVG + PAUSE_SVG;  // ring + pause-bars glyph
@@ -1721,6 +1791,22 @@
       '<path d="M4 12a8 8 0 1 0 2.34-5.66" stroke="white" stroke-width="2.2" stroke-linecap="round"/>' +
       '<polyline points="4,3 4,7 8,7" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>' +
       '</svg>';
+    var INFO_SVG =
+      '<svg pointer-events="none" width="76%" height="76%" viewBox="0 0 24 24" fill="none">' +
+      '<circle cx="12" cy="12" r="10" stroke="white" stroke-width="2"/>' +
+      '<line x1="12" y1="10" x2="12" y2="17" stroke="white" stroke-width="2.2" stroke-linecap="round"/>' +
+      '<circle cx="12" cy="7" r="1.2" fill="white"/>' +
+      '</svg>';
+    // Heart path: filled (pink) when favorited, outline (white) when not.
+    var HEART_PATH = 'M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z';
+    var HEART_FILL_SVG =
+      '<svg pointer-events="none" width="80%" height="80%" viewBox="0 0 24 24">' +
+      '<path d="' + HEART_PATH + '" fill="#ff5588"/>' +
+      '</svg>';
+    var HEART_OUTLINE_SVG =
+      '<svg pointer-events="none" width="80%" height="80%" viewBox="0 0 24 24">' +
+      '<path d="' + HEART_PATH + '" fill="none" stroke="white" stroke-width="2"/>' +
+      '</svg>';
 
     // Rotate handler factory: delta is CW degrees (90 = CW, 270 = CCW). Captures
     // identity at tap time (same drift-prevention pattern as Remove/Rate) and
@@ -1763,13 +1849,12 @@
     document.body.appendChild(catcher);
     jaxMenuOverlay = catcher;
 
-    // Pause toggle is always the FIRST item, immediately right of the jaxicon.
     var pauseDef = paused
       ? { svg: RESUME_SVG, onTap: function() { if (stream) doResume(stream); } }
       : { svg: PAUSE_SVG,  onTap: function() { if (stream) doPause(stream); } };
-    var itemDefs = [
-      pauseDef,
-      {
+    var ALL_DEFS = {
+      pause: pauseDef,
+      remove: {
         svg: REMOVE_SVG,
         onTap: function() {
           if (!stream) return;
@@ -1795,7 +1880,7 @@
           }, null);
         }
       },
-      {
+      rate: {
         svg: RATE_SVG,
         onTap: function() {
           if (!stream) return;
@@ -1807,13 +1892,49 @@
           openRatingMenu(s, _currentRating, ratingAssetId);
         }
       },
-      { svg: ROTCCW_SVG, onTap: makeRotate(270) },
-      { svg: ROTCW_SVG,  onTap: makeRotate(90)  }
-    ];
+      rotccw: { svg: ROTCCW_SVG, onTap: makeRotate(270) },
+      rotcw:  { svg: ROTCW_SVG,  onTap: makeRotate(90)  },
+      info:   { svg: INFO_SVG,   onTap: function() { openPhotoInfo(_currentPhotoInfo || {}); } },
+      favorite: {
+        svg: _currentIsFavorite ? HEART_FILL_SVG : HEART_OUTLINE_SVG,
+        onTap: function() {
+          if (!stream) return;
+          var hass = getHass();
+          if (!hass) return;
+          var s = stream;
+          var favAssetId = displayedAssetId;
+          var nextFav = !_currentIsFavorite;
+          var dismiss = showStatus(nextFav ? "Favorited" : "Unfavorited", nextFav ? "#ff5588" : "#aaaaaa");
+          var svcArgs = { stream: s };
+          if (favAssetId) svcArgs.asset_id = favAssetId;
+          Promise.resolve(
+            hass.callService("jax_stream", "toggle_favorite", svcArgs)
+          ).then(function() {
+            _currentIsFavorite = nextFav;
+            setTimeout(dismiss, 800);
+          }).catch(function(err) { dismiss(); console.error("[jax-stream] toggle_favorite failed:", err); });
+        }
+      }
+    };
+
+    // Read the configured icon order from the current_photo sensor attribute.
+    // Entity ID: sensor.jax_stream_<stream>_current_photo (HA slugifies the
+    // translated name "Current photo" from the "current_asset" translation key).
+    // Falls back to the hardcoded default if the attribute is absent or unrecognized.
+    var menuOrder = ["pause","remove","rate","rotccw","rotcw","info","favorite"];
+    var _h = getHass();
+    if (_h && _h.states && stream) {
+      var _assetSensor = _h.states["sensor.jax_stream_" + stream + "_current_photo"];
+      if (_assetSensor && _assetSensor.attributes && Array.isArray(_assetSensor.attributes.menu_order)) {
+        menuOrder = _assetSensor.attributes.menu_order;
+      }
+    }
+    var itemDefs = menuOrder.map(function(k) { return ALL_DEFS[k]; }).filter(Boolean);
 
     itemDefs.forEach(function(def, i) {
       var btn = document.createElement("div");
-      var targetX = 63 + i * 63;
+      var step = Math.round(window.innerWidth * 0.07) + 4;
+      var targetX = step + i * step;
       btn.style.cssText =
         "position:fixed;top:15px;left:11px;width:7vw;height:7vw;" +
         "background:rgba(0,0,0,0.55);border-radius:10px;" +
@@ -1887,10 +2008,11 @@
       // The outgoing photo's liveBlobUrl is released by captureLive below when
       // the new src resolves (it revokes the prior blob before adopting the new
       // one), so no explicit cleanup is needed here.
-      if (jaxMenuItems.length || confirmOverlay || ratingMenuOverlay) {
+      if (jaxMenuItems.length || confirmOverlay || ratingMenuOverlay || infoOverlay) {
         closeJaxMenu();
         if (confirmOverlay && confirmOverlay.parentNode) { confirmOverlay.parentNode.removeChild(confirmOverlay); confirmOverlay = null; }
         if (ratingMenuOverlay && ratingMenuOverlay.parentNode) { ratingMenuOverlay.parentNode.removeChild(ratingMenuOverlay); ratingMenuOverlay = null; }
+        if (infoOverlay && infoOverlay.parentNode) { infoOverlay.parentNode.removeChild(infoOverlay); infoOverlay = null; }
       }
     }
     lastPhotoSrc = src;
@@ -1916,6 +2038,15 @@
     var imgEntity = "image.jax_stream_" + s;
     if (h.states && h.states[imgEntity]) {
       _lastAdvanceUpdated = h.states[imgEntity].last_updated || null;
+      var initAttrs = h.states[imgEntity].attributes || {};
+      _currentPhotoInfo = {
+        date: initAttrs.photo_date || null,
+        city: initAttrs.photo_city || null,
+        country: initAttrs.photo_country || null,
+        camera: initAttrs.photo_camera || null,
+        album: initAttrs.photo_album || null,
+      };
+      _currentIsFavorite = !!initAttrs.is_favorite;
     }
     h.connection.subscribeEvents(function(event) {
       var d = event.data || {};
@@ -1923,8 +2054,17 @@
       var upd = d.new_state && d.new_state.last_updated;
       if (!upd || upd === _lastAdvanceUpdated) return;
       _lastAdvanceUpdated = upd;
+      var attrs = d.new_state.attributes || {};
+      _currentPhotoInfo = {
+        date: attrs.photo_date || null,
+        city: attrs.photo_city || null,
+        country: attrs.photo_country || null,
+        camera: attrs.photo_camera || null,
+        album: attrs.photo_album || null,
+      };
+      _currentIsFavorite = !!attrs.is_favorite;
       if (_localAdvancePending) { _pendingSubscriptionReload = true; return; }
-      if (!slideOverlay) reloadStream(s);
+      if (!slideOverlay) { if (!carouselLeft) pendingSlideDir = 1; reloadStream(s); }
     }, "state_changed").then(function(unsub) { _advanceUnsub = unsub; });
   }
 
@@ -2140,6 +2280,7 @@
     lastPhotoSrc = null;
     if (confirmOverlay && confirmOverlay.parentNode) { confirmOverlay.parentNode.removeChild(confirmOverlay); confirmOverlay = null; }
     if (ratingMenuOverlay && ratingMenuOverlay.parentNode) { ratingMenuOverlay.parentNode.removeChild(ratingMenuOverlay); ratingMenuOverlay = null; }
+    if (infoOverlay && infoOverlay.parentNode) { infoOverlay.parentNode.removeChild(infoOverlay); infoOverlay = null; }
     closeJaxMenu();
     if (jaxMenuTrigger && jaxMenuTrigger.parentNode) { jaxMenuTrigger.parentNode.removeChild(jaxMenuTrigger); jaxMenuTrigger = null; }
     if (pauseIndicator && pauseIndicator.parentNode) { pauseIndicator.parentNode.removeChild(pauseIndicator); pauseIndicator = null; }

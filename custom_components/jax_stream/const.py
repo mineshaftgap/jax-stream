@@ -81,16 +81,25 @@ CONF_REMOVE_TO_ALBUM_ID = "remove_to_album_id"
 CONF_SHUFFLE = "shuffle"
 
 # ---------------------------------------------------------------------------
+# Jaxmenu icon order (configurable via options flow)
+# Keys must match the action names used in jax_stream.js openJaxMenu().
+# ---------------------------------------------------------------------------
+CONF_MENU_ORDER = "menu_order"
+MENU_ORDER_KEYS = ("pause", "remove", "rate", "rotccw", "rotcw", "info", "favorite")
+DEFAULT_MENU_ORDER = "pause,remove,rate,rotccw,rotcw,info,favorite"
+
+# ---------------------------------------------------------------------------
 # Phase 2: service names (registered in __init__.async_setup)
 # ---------------------------------------------------------------------------
-SERVICE_NEXT       = "next"
-SERVICE_PREVIOUS   = "previous"
-SERVICE_REMOVE     = "remove"
-SERVICE_SET_RATING = "set_rating"
-SERVICE_TOUCH      = "touch"
-SERVICE_PAUSE      = "pause"
-SERVICE_RESUME     = "resume"
-SERVICE_ROTATE     = "rotate"
+SERVICE_NEXT             = "next"
+SERVICE_PREVIOUS         = "previous"
+SERVICE_REMOVE           = "remove"
+SERVICE_SET_RATING       = "set_rating"
+SERVICE_TOUCH            = "touch"
+SERVICE_PAUSE            = "pause"
+SERVICE_RESUME           = "resume"
+SERVICE_ROTATE           = "rotate"
+SERVICE_TOGGLE_FAVORITE  = "toggle_favorite"
 
 # ---------------------------------------------------------------------------
 # Photo rotate (Immich non-destructive edit). Verified against live Immich

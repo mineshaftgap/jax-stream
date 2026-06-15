@@ -64,6 +64,11 @@ class JaxStreamCurrentAssetSensor(_JaxStreamSensor):
         """Return the UUID of the currently displayed photo, or None if not yet loaded."""
         return self.coordinator.current_asset_id
 
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Expose menu_order so jax_stream.js can read it from hass.states."""
+        return {"menu_order": self.coordinator.menu_order_list}
+
 
 class JaxStreamCurrentPhotoLinkSensor(_JaxStreamSensor):
     """Text sensor: deep link to the currently displayed photo in the Immich web UI.
