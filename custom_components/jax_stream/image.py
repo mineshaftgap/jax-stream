@@ -105,6 +105,12 @@ class JaxStreamImage(CoordinatorEntity[JaxStreamCoordinator], ImageEntity):
             "photo_camera": _str(info.get("camera", "")),
             "photo_album": _str(self.coordinator._album_name),
             "is_favorite": self.coordinator._current_is_favorite,
+            # GH issue #1: the resolved disk subdir can differ from the typed
+            # stream name ("Guest Room" -> "guest-room"); this is the
+            # authoritative, no-source-reading way for a user to find the
+            # folder their stream's photos land in (View Assist Dashboard
+            # Options "Rotate background path" needs this exact value).
+            "stream_subdir": self.coordinator._stream_subdir,
         }
 
     @callback

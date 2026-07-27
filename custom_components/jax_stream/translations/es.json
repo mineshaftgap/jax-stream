@@ -27,6 +27,8 @@
       "cannot_connect": "No se pudo conectar a Immich. Compruebe la URL y que el servidor sea accesible.",
       "invalid_auth": "Immich rechazó la clave API o el álbum. Compruebe la clave API y el ID del álbum.",
       "invalid_menu_order": "Invalid button order. Use comma-separated keys from: pause, remove, rate, rotccw, rotcw, info. No duplicates.",
+      "invalid_name": "El nombre del stream debe contener al menos una letra, un dígito, un guión o un guión bajo. Se convierte en el nombre de la carpeta para las fotos de este stream.",
+      "duplicate_stream_subdir": "Otra entrada de Jax Stream ya utiliza este nombre de carpeta. Elija un nombre de stream diferente.",
       "unknown": "Error inesperado. Consulte el registro de Home Assistant."
     },
     "abort": {

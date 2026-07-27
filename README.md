@@ -81,6 +81,8 @@ Jax Stream fills the gap: VA-native, per-device, no extra container -- packaged 
 
 That is the whole install -- no YAML editing, no shell scripts, no manual view registration. To add another stream for another device, repeat "Add Integration" with a different album ID and stream name. Edit any stream later via its options flow (also where you set an optional Remove-to recovery album).
 
+**Upgrading from an older version:** no action needed. Your existing stream keeps serving photos from the same folder it always has -- Jax Stream migrates it automatically on the first restart after upgrading.
+
 ### One-time View Assist setup
 
 After installation, point your device at the jax-stream view. Settings -> Devices & Services -> View Assist -> Master Configuration -> Configure -> Dashboard Options. Set two fields:
@@ -88,9 +90,22 @@ After installation, point your device at the jax-stream view. Settings -> Device
 - **Home screen**: `/view-assist/jax-stream`
 - **Background settings -> Background mode**: `local_random`
 - **Background settings -> Rotate background path**: `images/jax-stream/<stream>`
-  (replace `<stream>` with the stream name you entered in the config-flow form)
+  (see below for how to find `<stream>` -- it is not always the name you typed)
 
 Without `local_random`, VA uses its default blue gradient -- the Immich photos will not appear even if the integration is running correctly.
+
+**Finding your `<stream>` folder name.** The config flow does not echo it back,
+and it is derived from the stream name you typed, not always equal to it:
+lowercased, spaces and punctuation become dashes, only letters/digits/dash/
+underscore survive, truncated to 48 characters. Example: stream name
+"Guest Room" -> folder `guest-room` ->
+`/config/view_assist/images/jax-stream/guest-room/random.jpg`. The
+authoritative way to read it without guessing: open that stream's Jax Stream
+image entity in Developer Tools -> States (or its entity's attributes panel)
+and read the `stream_subdir` attribute -- that is the exact folder name to
+put after `images/jax-stream/` above. An existing stream from before this
+folder-per-stream behavior shipped always resolves to `default`, so its
+Rotate background path (`images/jax-stream/default`) needs no change.
 
 > **Warning:** the VA Dashboard Options form is a full-form resend. Any field you leave blank or any section you send as empty is **deleted** from your saved config. Always fill in every field that appears pre-filled; only change the field you intend to change. Close the dialog with X if you do not want to save.
 
@@ -283,7 +298,7 @@ Basic slideshow: **`asset.read` + `asset.view`**. Add **`asset.update`** to use 
 ## Troubleshooting
 
 - **View shows VA default gradient:** two common causes: (1) the device home screen is not set to `/view-assist/jax-stream` (VA Dashboard Options -> Home screen); (2) Background mode is not set to `local_random` with the correct Rotate background path in VA Dashboard Options -- without `local_random`, VA ignores the integration's image entity and shows its built-in gradient.
-- **All devices show the same photo:** each stream is a separate integration entry with its own album. Add a second integration entry for the second device's album.
+- **All devices show the same photo:** each stream is a separate integration entry with its own album and its own disk folder (see "Finding your `<stream>` folder name" above). Add a second integration entry for the second device's album, then point that device's VA Dashboard Options "Rotate background path" at the NEW stream's folder -- pointing two devices at the same folder is what causes this.
 - **Photo not advancing:** check the Jax Stream device card in Settings -> Devices & Services -> Jax Stream. The `switch` entity may be paused; flip it to resume.
 - **VA Dashboard Options saved wrong:** the form is a full resend -- any field left blank is deleted from your saved config. If settings look wrong, restore from your HA backup and re-enter only the fields you intend to change.
 

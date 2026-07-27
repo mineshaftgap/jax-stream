@@ -37,16 +37,19 @@ from .const import (
     CONF_PREFETCH_COUNT,
     CONF_REMOVE_TO_ALBUM_ID,
     CONF_SHUFFLE,
+    CONF_STREAM_SUBDIR,
     CONF_URL,
     DEFAULT_INTERVAL,
     DEFAULT_MENU_ORDER,
     DEFAULT_PAST_COUNT,
     DEFAULT_PREFETCH_COUNT,
+    DEFAULT_STREAM_SUBDIR,
     DOMAIN,
     MAX_INTERVAL,
     MENU_ORDER_KEYS,
     MIN_INTERVAL,
 )
+from ._stream import slugify_stream_name, subdir_in_use
 from .immich import ImmichAuthError, ImmichClient, ImmichConnError
 
 _LOGGER = logging.getLogger(__name__)
@@ -193,6 +196,12 @@ class JaxStreamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """
 
     VERSION = 1
+    # GH issue #1: first migration this integration has needed (stamps
+    # pre-fix entries with stream_subdir="default" via async_migrate_entry in
+    # __init__.py). Minor bumps must stay backward-compatible -- old code
+    # ignores the extra stream_subdir key, so a downgrade to this version is
+    # safe.
+    MINOR_VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -200,19 +209,43 @@ class JaxStreamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle the user-initiated config step."""
         errors: dict[str, str] = {}
 
+        subdir = ""
         if user_input is not None:
             if not _validate_menu_order(user_input.get(CONF_MENU_ORDER, "")):
                 errors["base"] = "invalid_menu_order"
             else:
+                # Cheap local checks before the network _validate call (GH issue #1):
+                # slugify + dedupe the stream subdir first, mirroring the existing
+                # menu-order-before-network ordering above.
+                subdir = slugify_stream_name(user_input.get(CONF_NAME, ""))
+                if not subdir:
+                    errors["base"] = "invalid_name"
+                else:
+                    # An un-migrated entry still physically occupies "default" on
+                    # disk even though it has no CONF_STREAM_SUBDIR yet, so it must
+                    # still block a new "Default"-named stream -- the "or
+                    # DEFAULT_STREAM_SUBDIR" fallback is load-bearing here.
+                    existing = [
+                        e.data.get(CONF_STREAM_SUBDIR) or DEFAULT_STREAM_SUBDIR
+                        for e in self._async_current_entries()
+                    ]
+                    if subdir_in_use(subdir, existing):
+                        errors["base"] = "duplicate_stream_subdir"
+            if not errors:
                 errors = await _validate(self.hass, user_input)
             if not errors:
                 await self.async_set_unique_id(
                     f"{user_input[CONF_URL]}::{user_input[CONF_ALBUM_ID]}"
                 )
                 self._abort_if_unique_id_configured()
+                # Persist the resolved subdir into entry.data AT CREATE TIME --
+                # never re-derived later. The options flow renames CONF_NAME via
+                # entry.options without touching entry.data, so a live re-derive
+                # would silently relocate a live stream's photo folder (GH issue #1).
+                data = {**user_input, CONF_STREAM_SUBDIR: subdir}
                 return self.async_create_entry(
                     title=user_input[CONF_NAME],
-                    data=user_input,
+                    data=data,
                 )
 
         return self.async_show_form(
@@ -270,6 +303,10 @@ class JaxStreamOptionsFlow(config_entries.OptionsFlowWithReload):
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, title=user_input[CONF_NAME]
                     )
+                # The subdir is immutable for the life of the entry -- rename
+                # changes only the display title (GH issue #1). Drop the key so
+                # it can never shadow entry.data via the options-merged view.
+                user_input.pop(CONF_STREAM_SUBDIR, None)
                 return self.async_create_entry(data=user_input)
 
         return self.async_show_form(

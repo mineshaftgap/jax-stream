@@ -21,6 +21,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import (
+    ConfigEntryError,
     HomeAssistantError,
     ServiceNotFound,
     ServiceValidationError,
@@ -38,6 +39,7 @@ from .const import (
     CONF_MENU_ORDER,
     CONF_REMOVE_TO_ALBUM_ID,
     CONF_SHUFFLE,
+    CONF_STREAM_SUBDIR,
     CONF_URL,
     DEFAULT_INTERVAL,
     DEFAULT_MENU_ORDER,
@@ -60,6 +62,7 @@ from .const import (
     SERVICE_TOGGLE_FAVORITE,
     SERVICE_TOUCH,
     ROTATE_ALLOWED_DELTAS,
+    STREAM_NAME_RE,
     VA_DOMAIN,
     VIEW_ASSET_CLASS,
     VIEW_NAME,
@@ -295,6 +298,37 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
+    """Migrate a Jax Stream config entry to the current minor version.
+
+    First migration this integration has needed (GH issue #1). Pre-fix
+    entries wrote their photos to the literal "default" disk subdir and their
+    View Assist Dashboard Options already point at that path -- an upgraded
+    entry must keep resolving to "default" with zero user action, so this
+    stamps data[CONF_STREAM_SUBDIR] = DEFAULT_STREAM_SUBDIR via setdefault
+    (never assignment) rather than leaving the coordinator to fall back
+    silently, which would reintroduce the exact multi-stream collision this
+    fix closes.
+    """
+    if entry.version > 1:
+        # Newer major version than this code understands -- downgrade
+        # unsupported.
+        return False
+
+    if entry.version == 1 and entry.minor_version < 2:
+        data = dict(entry.data)
+        data.setdefault(CONF_STREAM_SUBDIR, DEFAULT_STREAM_SUBDIR)
+        hass.config_entries.async_update_entry(
+            entry, data=data, version=1, minor_version=2
+        )
+        _LOGGER.info(
+            "jax_stream: migrated entry %s to stream_subdir=%s",
+            entry.entry_id, data[CONF_STREAM_SUBDIR],
+        )
+
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
     """Set up a Jax Stream config entry.
 
@@ -318,10 +352,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
 
     client = ImmichClient(session, merged[CONF_URL], merged[CONF_API_KEY])
 
+    # Per-entry disk subdir (GH issue #1). Read from entry.data ONLY -- deliberately
+    # NOT from `merged`: the options flow renames CONF_NAME without touching
+    # entry.data, and re-deriving live would relocate a live stream's photo folder.
+    # Migrated and freshly-created entries both carry CONF_STREAM_SUBDIR in
+    # entry.data (async_migrate_entry / config_flow create-time persist); the
+    # "or DEFAULT_STREAM_SUBDIR" fallback only matters for a hand-edited
+    # .storage entry that skipped migration somehow.
+    stream_subdir = entry.data.get(CONF_STREAM_SUBDIR) or DEFAULT_STREAM_SUBDIR
+    if not STREAM_NAME_RE.match(stream_subdir):
+        # Defense in depth (T-GH1-02): re-validate at load in case .storage was
+        # hand-edited. Raise rather than silently falling back to "default" --
+        # a silent fallback would reintroduce the exact collision this fixes.
+        raise ConfigEntryError(f"Invalid stream subdir for {entry.title}")
+
     # Build a settings namespace carrying runtime tunables to the coordinator.
-    # stream_subdir defaults to DEFAULT_STREAM_SUBDIR ("default") so the live
-    # VA rotate_background_path keeps working with zero VA changes (Pitfall 5 / A2).
-    # Slugified per-stream subdirs are deferred to Phase 4 (D-05 out of scope now).
     # remove_to_album_id: optional per-stream recovery album (D-10). Merged options win.
     settings = types.SimpleNamespace(
         album_id=merged[CONF_ALBUM_ID],
@@ -329,7 +374,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
         interval=int(merged.get(CONF_INTERVAL, DEFAULT_INTERVAL)),
         batch_size=BATCH_SIZE,
         retry_cap=RETRY_CAP,
-        stream_subdir=DEFAULT_STREAM_SUBDIR,  # fixed; per-stream subdirs deferred to backlog (D-08)
+        stream_subdir=stream_subdir,
         remove_to_album_id=merged.get(CONF_REMOVE_TO_ALBUM_ID) or None,
         shuffle=merged.get(CONF_SHUFFLE, True),
         menu_order=merged.get(CONF_MENU_ORDER, DEFAULT_MENU_ORDER),
@@ -376,6 +421,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
 
     # Register the stream in hass.data for service-name resolution (T-2-08).
     # Service handlers resolve coordinator by stream=stream_subdir via this dict.
+    # Per-entry subdirs (GH issue #1) make this genuinely per-stream now: before
+    # this fix every entry shared stream_subdir="default", so a second config
+    # entry silently EVICTED the first from this dict and jax_stream.next
+    # {stream: "default"} could only ever reach whichever entry loaded last.
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][settings.stream_subdir] = coordinator
 

@@ -46,6 +46,13 @@ MAX_INTERVAL = 3600
 # Default stream subdir: must match the live VA rotate_background_path (Pitfall 5)
 DEFAULT_STREAM_SUBDIR = "default"
 
+# entry.data key: the per-entry disk subdir, slugified from CONF_NAME and
+# persisted at config-flow create time (GH issue #1 -- never re-derived live).
+CONF_STREAM_SUBDIR = "stream_subdir"
+
+# Cap on a slugified stream subdir's length (path-length hygiene, T-GH1-03).
+MAX_STREAM_SUBDIR_LEN = 48
+
 # Path segments joined via hass.config.path() -- never hardcode /config
 DISK_PATH_SEGMENTS = ("view_assist", "images", "jax-stream")
 

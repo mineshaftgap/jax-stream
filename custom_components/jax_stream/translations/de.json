@@ -27,6 +27,8 @@
       "cannot_connect": "Verbindung zu Immich fehlgeschlagen. Überprüfen Sie die URL und ob der Server erreichbar ist.",
       "invalid_auth": "Immich hat den API-Schlüssel oder das Album abgelehnt. Überprüfen Sie den API-Schlüssel und die Album-ID.",
       "invalid_menu_order": "Invalid button order. Use comma-separated keys from: pause, remove, rate, rotccw, rotcw, info. No duplicates.",
+      "invalid_name": "Der Stream-Name muss mindestens einen Buchstaben, eine Ziffer, einen Bindestrich oder Unterstrich enthalten. Er wird zum Ordnernamen für die Fotos dieses Streams.",
+      "duplicate_stream_subdir": "Ein anderer Jax-Stream-Eintrag verwendet diesen Ordnernamen bereits. Wählen Sie einen anderen Stream-Namen.",
       "unknown": "Unerwarteter Fehler. Weitere Informationen finden Sie im Home Assistant-Protokoll."
     },
     "abort": {

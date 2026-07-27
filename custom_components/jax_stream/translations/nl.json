@@ -27,6 +27,8 @@
       "cannot_connect": "Verbinding met Immich mislukt. Controleer de URL en of de server bereikbaar is.",
       "invalid_auth": "Immich heeft de API-sleutel of het album geweigerd. Controleer de API-sleutel en het album-ID.",
       "invalid_menu_order": "Invalid button order. Use comma-separated keys from: pause, remove, rate, rotccw, rotcw, info. No duplicates.",
+      "invalid_name": "De streamnaam moet ten minste één letter, cijfer, koppelteken of onderstrepingsteken bevatten. Dit wordt de mapnaam voor de foto's van deze stream.",
+      "duplicate_stream_subdir": "Een andere Jax Stream-invoer gebruikt deze mapnaam al. Kies een andere streamnaam.",
       "unknown": "Onverwachte fout. Raadpleeg het Home Assistant-logboek."
     },
     "abort": {
