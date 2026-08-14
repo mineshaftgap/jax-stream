@@ -77,7 +77,7 @@ def _transpose_jpeg(raw: bytes, asset_id: str = "") -> bytes:
     is patched in by _backfill after the successor slot is filled).
     JS reads {prev, self, next} from the COM for neighbor identity.
     """
-    from PIL import Image, ImageOps  # Pillow; pinned in manifest.json
+    from PIL import Image, ImageOps  # Pillow; bundled with HA core, not in manifest.json requirements
 
     img = Image.open(BytesIO(raw))
     img = ImageOps.exif_transpose(img)           # bake orientation in (matches v41)
