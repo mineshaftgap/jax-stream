@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import time
+from datetime import datetime as dt
 from datetime import timedelta
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -513,6 +514,84 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         except ImmichError:
             self._album_name = ""
 
+    # ------------------------------------------------------------------
+    # View Assist bridge
+    # ------------------------------------------------------------------
+    # VA's BackgroundImageManager normally re-picks random.jpg on its own
+    # `rotate_background_interval` schedule (default 10 min). For jax-stream's
+    # 60s organic interval + on-demand swipes, that schedule is too coarse --
+    # the device shows the same photo for up to 60 min after every advance.
+    # Pushing the new random.jpg URL directly into VA's manager makes the
+    # device refresh its CSS background-image immediately.
+    #
+    # The dispatcher signal route (view_assist_<entry_id>_event +
+    # BACKGROUND_CHANGE) only works in VA's LINKED mode. The manager connects
+    # its listener there. In local_random / local_sequence -- the modes
+    # jax-stream relies on per its README -- no listener is registered, so
+    # the dispatcher signal goes nowhere. Instead, we locate the
+    # BackgroundImageManager via the public hass.data structure and call
+    # _set_background_image(image_url) directly. That writes the new URL to
+    # dashboard.background_settings.background (which the VA sensor's
+    # `background` attribute mirrors) and fires the dispatcher for any
+    # downstream listeners.
+    #
+    # Per-device entries (VACA, VIEW_AUDIO) inherit their background path
+    # from the "Master Configuration" entry, so the effective path has to
+    # be resolved with a master-fallback before matching. See
+    # _va_effective_background_path.
+    def _va_effective_background_path(self, entry) -> str | None:
+        """Return the effective rotate_background_path for a VA entry.
+
+        View Assist stores the path in the "Master Configuration" entry's
+        options; per-device entries inherit from it when their own options
+        are empty. This mirrors the merge VA does in set_runtime_data_for_config
+        (data.py get_config_value).
+        """
+        opts = entry.options or {}
+        own = (opts.get("background_settings") or {}).get("rotate_background_path")
+        if own:
+            return own
+        for other in self.hass.config_entries.async_entries("view_assist"):
+            if other.entry_id == entry.entry_id:
+                continue
+            oother = other.options or {}
+            master = (oother.get("background_settings") or {}).get(
+                "rotate_background_path"
+            )
+            if master:
+                return master
+        return None
+
+    def _notify_view_assist(self) -> None:
+        """Push the current random.jpg URL to any VA display device showing this stream.
+
+        Silent no-op when VA is not installed, no VA display device exists, or
+        no device's effective rotate_background_path points at this stream's
+        folder. Fire-and-forget -- the coordinator's advance should not wait
+        on the VA push.
+        """
+        try:
+            relative = self.disk_path.replace(self.hass.config.config_dir, "")
+            image_url = f"{relative}?v={dt.now().strftime('%Y%m%d%H%M%S')}"
+        except Exception:  # noqa: BLE001
+            return
+
+        va_data = self.hass.data.get("view_assist", {})
+        va_devices = va_data.get("devices", {})
+        if not va_devices:
+            return
+
+        expected_path = f"images/jax-stream/{self._stream_subdir}"
+        for entry in self.hass.config_entries.async_entries("view_assist"):
+            entry_data = va_devices.get(entry.entry_id, {})
+            mgr = entry_data.get("BackgroundImageManager")
+            if mgr is None:
+                # Not a display device (e.g. Master Configuration). Skip.
+                continue
+            if self._va_effective_background_path(entry) != expected_path:
+                continue
+            self.hass.async_create_task(mgr._set_background_image(image_url))
+
     async def _async_update_data(self) -> bytes:
         """Organic-timer advance: promote the next ring slot into random.jpg.
 
@@ -580,6 +659,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         await self._refresh_adjacent_bytes()
         self._kick_backfill()
         self.hass.bus.async_fire(f"{DOMAIN}_advance", {"stream": self._stream_subdir})
+        self._notify_view_assist()
         return jpeg
 
     async def _fetch_next_slot(self) -> tuple[bytes, str, int, dict]:
@@ -719,6 +799,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self.async_update_listeners()
         self._kick_backfill()
         self.hass.bus.async_fire(f"{DOMAIN}_advance", {"stream": self._stream_subdir})
+        self._notify_view_assist()
         # Do NOT call async_request_refresh() -- the display is already updated.
 
     async def async_previous(self) -> None:
@@ -760,6 +841,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         await self._refresh_adjacent_bytes()
         self.async_update_listeners()
         self.hass.bus.async_fire(f"{DOMAIN}_advance", {"stream": self._stream_subdir})
+        self._notify_view_assist()
 
     async def async_set_paused(self, paused: bool) -> None:
         """Switch turn_on(True)/turn_off(False). turn_off is FULL resume: clears both (D-08)."""
@@ -999,6 +1081,7 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
         self.image_bytes = jpeg
         self.image_last_updated = dt_util.utcnow()
         self.async_update_listeners()
+        self._notify_view_assist()
 
     # -----------------------------------------------------------------------
     # Backfill task

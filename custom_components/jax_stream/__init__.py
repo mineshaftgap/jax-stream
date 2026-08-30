@@ -28,6 +28,7 @@ from homeassistant.exceptions import (
 )
 from homeassistant.helpers import entity_registry, config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import (
     BATCH_SIZE,
@@ -427,6 +428,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: "ConfigEntry") -> bool:
     # {stream: "default"} could only ever reach whichever entry loaded last.
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][settings.stream_subdir] = coordinator
+
+    # VACA native gesture hook.
+    # VACA on a jailbroken Echo Show detects swipes at the Android side and
+    # dispatches them on vaca_<device_id>_gesture_update. The jax_stream.js
+    # module's touchend listener on the WebView does not always fire on this
+    # WebView (Echo Show 5 VACA on LineageOS) -- the touch events never reach
+    # the document. Wiring the integration directly to VACA's native gesture
+    # event bypasses the WebView entirely. left/right = next/previous mirrors
+    # the JS convention (carousel: left swipe = advance).
+    async def _on_vaca_gesture(data: dict) -> None:
+        gesture = data.get("gesture")
+        if data.get("touch_points", 1) != 1:
+            return
+        try:
+            if gesture == "left":
+                await coordinator.async_next()
+            elif gesture == "right":
+                await coordinator.async_previous()
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("VACA gesture handler error: %s", exc)
+
+    ent_reg = entity_registry.async_get(hass)
+    for ent in ent_reg.entities.values():
+        if (
+            ent.platform == "vaca"
+            and ent.domain == "event"
+            and ent.device_id
+        ):
+            signal = f"vaca_{ent.device_id}_gesture_update"
+            entry.async_on_unload(
+                async_dispatcher_connect(hass, signal, _on_vaca_gesture)
+            )
 
     # Cancel any in-flight backfill task on entry unload so it doesn't outlive
     # the coordinator (Phase 1 prefetch-window-restore).
