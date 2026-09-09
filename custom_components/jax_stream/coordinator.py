@@ -518,22 +518,27 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
     # View Assist bridge
     # ------------------------------------------------------------------
     # VA's BackgroundImageManager normally re-picks random.jpg on its own
-    # `rotate_background_interval` schedule (default 10 min). For jax-stream's
-    # 60s organic interval + on-demand swipes, that schedule is too coarse --
-    # the device shows the same photo for up to 60 min after every advance.
-    # Pushing the new random.jpg URL directly into VA's manager makes the
-    # device refresh its CSS background-image immediately.
+    # `rotate_background_interval` schedule (default 10 min, often set higher).
+    # For jax-stream's 60s+ organic interval + on-demand swipes, that
+    # schedule is too coarse -- the device shows the same photo for up to 60
+    # min after every advance. Pushing the new random.jpg URL on every
+    # advance makes the device refresh its CSS background-image
+    # immediately.
     #
-    # The dispatcher signal route (view_assist_<entry_id>_event +
-    # BACKGROUND_CHANGE) only works in VA's LINKED mode. The manager connects
-    # its listener there. In local_random / local_sequence -- the modes
-    # jax-stream relies on per its README -- no listener is registered, so
-    # the dispatcher signal goes nowhere. Instead, we locate the
-    # BackgroundImageManager via the public hass.data structure and call
-    # _set_background_image(image_url) directly. That writes the new URL to
-    # dashboard.background_settings.background (which the VA sensor's
-    # `background` attribute mirrors) and fires the dispatcher for any
-    # downstream listeners.
+    # Push path: call BackgroundImageManager._set_background_image() on
+    # the matching VA display entry's hass.data slot. That writes the new
+    # URL to dashboard.background_settings.background (which the VA
+    # sensor's `background` attribute mirrors) and fires the
+    # view_assist_<entry_id>_event dispatcher for any downstream listeners.
+    # The ?v=YYYYMMDDHHMMSS cache-buster matches what VA's own
+    # _make_url_from_path produces (background.py:198-207).
+    #
+    # Earlier revisions of this code called VA's _set_background_image
+    # via a public dispatcher fire, but HA's custom_component loader
+    # isolates sibling custom_components -- the import path for VAEvent
+    # and VAEventType does not resolve from jax_stream.coordinator. The
+    # manager-direct call uses hass.data dict access, which works in any
+    # HA install without a Python import.
     #
     # Per-device entries (VACA, VIEW_AUDIO) inherit their background path
     # from the "Master Configuration" entry, so the effective path has to
@@ -565,10 +570,29 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
     def _notify_view_assist(self) -> None:
         """Push the current random.jpg URL to any VA display device showing this stream.
 
-        Silent no-op when VA is not installed, no VA display device exists, or
-        no device's effective rotate_background_path points at this stream's
-        folder. Fire-and-forget -- the coordinator's advance should not wait
-        on the VA push.
+        Calls BackgroundImageManager._set_background_image() on the matching
+        VA display entry's hass.data slot. That writes the new URL to
+        dashboard.background_settings.background and fires the
+        view_assist_<entry_id>_event dispatcher for any downstream listeners
+        (sensor updates its attributes; kiosk view template re-renders).
+        The ?v=YYYYMMDDHHMMSS cache-buster matches what VA's own
+        _make_url_from_path produces.
+
+        Note on the public dispatcher alternative: a cleaner v2 refactor
+        would fire view_assist_<entry_id>_event directly with
+        VAEvent(BACKGROUND_CHANGE, ...). That requires importing
+        view_assist.typed at module load, but HA's custom_component loader
+        isolates sibling custom_components -- the import path
+        (homeassistant.components.view_assist.typed / view_assist.typed)
+        does not resolve from jax_stream.coordinator. The v1 manager-direct
+        call uses hass.data dict access, which works in any HA install. If
+        view_assist ever exposes a public background-push service or event,
+        this can be migrated to that path.
+
+        Silent no-op when VA is not installed, no VA display device exists,
+        or no device's effective rotate_background_path points at this
+        stream's folder. Fire-and-forget -- the coordinator's advance should
+        not wait on the VA push.
         """
         try:
             relative = self.disk_path.replace(self.hass.config.config_dir, "")
@@ -582,15 +606,25 @@ class JaxStreamCoordinator(DataUpdateCoordinator[bytes]):
             return
 
         expected_path = f"images/jax-stream/{self._stream_subdir}"
+        pushed = 0
         for entry in self.hass.config_entries.async_entries("view_assist"):
+            if self._va_effective_background_path(entry) != expected_path:
+                continue
             entry_data = va_devices.get(entry.entry_id, {})
             mgr = entry_data.get("BackgroundImageManager")
             if mgr is None:
                 # Not a display device (e.g. Master Configuration). Skip.
                 continue
-            if self._va_effective_background_path(entry) != expected_path:
-                continue
             self.hass.async_create_task(mgr._set_background_image(image_url))
+            pushed += 1
+
+        if pushed:
+            _LOGGER.debug(
+                "VA background pushed: stream=%s url=%s devices=%d",
+                self._stream_subdir,
+                image_url,
+                pushed,
+            )
 
     async def _async_update_data(self) -> bytes:
         """Organic-timer advance: promote the next ring slot into random.jpg.

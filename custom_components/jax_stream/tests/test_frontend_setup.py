@@ -91,6 +91,10 @@ _HA_MOCKS = {
         string=str,
         config_entry_only_config_schema=lambda domain: (lambda data: data),
     ),
+    # __init__.py imports async_dispatcher_connect for the VACA gesture hook.
+    "homeassistant.helpers.dispatcher": types.SimpleNamespace(
+        async_dispatcher_connect=lambda *a, **k: (lambda: None),
+    ),
     "homeassistant.util": types.ModuleType("homeassistant.util"),
     "homeassistant.util.dt": types.SimpleNamespace(utcnow=lambda: object()),
     "homeassistant.components.http": _ha_http,
