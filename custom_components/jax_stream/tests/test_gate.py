@@ -210,6 +210,10 @@ def _make_stub(
     stub._refresh_adjacent_bytes = AsyncMock(return_value=None)
     stub._kick_backfill = MagicMock()
     stub.async_next = AsyncMock(return_value=None)
+    # VA bridge -- tests do not exercise the public dispatcher fire path,
+    # but the coordinator calls it after every advance. Stubbed to a no-op
+    # so existing tests keep their existing assertions.
+    stub._notify_view_assist = MagicMock(return_value=None)
 
     return stub
 
@@ -556,6 +560,183 @@ class TestRemovePurgesFromRing(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("X", stub._slot_uuids)
         # X's old slot file is gone (removed, not left dangling).
         self.assertFalse(os.path.exists(self._slot_file(3)))
+
+
+# ---------------------------------------------------------------------------
+# Tests: View Assist bridge (manager-direct call, v1.5 behavior)
+# ---------------------------------------------------------------------------
+#
+# Earlier v2 refactor attempted to fire the public view_assist_<entry_id>_event
+# dispatcher with VAEvent(BACKGROUND_CHANGE, ...). That required importing
+# view_assist.typed at module load -- which doesn't resolve from
+# jax_stream.coordinator inside HA's custom_component loader (sibling
+# custom_components are isolated). The v1.5 path reverts to the manager-
+# direct call: BackgroundImageManager._set_background_image() on
+# hass.data["view_assist"]["devices"][entry_id]["BackgroundImageManager"].
+# The dispatch is fired internally by that method, with the cache-busted
+# URL written to dashboard.background_settings.background first.
+#
+# These tests pin the v1.5 contract so a future v2 attempt (e.g. when
+# view_assist exposes a public background-push service) is forced to update
+# the tests deliberately rather than silently.
+
+
+class TestVANotifyBridge(unittest.IsolatedAsyncioTestCase):
+    """VA bridge calls BackgroundImageManager._set_background_image() on
+    the matching VA display entry's hass.data slot. Equivalent end-to-end
+    behavior to the v2 public-dispatcher fire -- the manager writes the
+    new URL to dashboard.background_settings.background AND fires the
+    view_assist_<entry_id>_event dispatcher internally.
+    """
+
+    def _make_stub(self, *, va_devices=None, effective_path_by_entry=None,
+                   config_dir="/config"):
+        """Stub with the minimum surface _notify_view_assist needs.
+
+        va_devices=None is treated as 'view_assist not installed' (silent
+        no-op). Pass a dict {entry_id: {"BackgroundImageManager": mgr_mock}}
+        to enable the bridge path.
+        """
+        stub = types.SimpleNamespace()
+        stub.disk_path = f"{config_dir}/view_assist/images/jax-stream/sub/random.jpg"
+        stub._stream_subdir = "sub"
+
+        if effective_path_by_entry is None:
+            effective_path_by_entry = {}
+
+        # Set up a mock manager per effective-path entry so the test can
+        # assert on the call.
+        self._mgrs = {}
+        if va_devices is not None:
+            for entry_id in effective_path_by_entry:
+                if entry_id in va_devices:
+                    mgr = va_devices[entry_id].get("BackgroundImageManager")
+                    if mgr is not None:
+                        self._mgrs[entry_id] = mgr
+
+        if va_devices is None:
+            stub.hass = types.SimpleNamespace(
+                config=types.SimpleNamespace(config_dir=config_dir),
+                data={},
+            )
+        else:
+            stub.hass = types.SimpleNamespace(
+                config=types.SimpleNamespace(config_dir=config_dir),
+                data={"view_assist": {"devices": va_devices}},
+            )
+
+        # Attribute lookup on the stub, not method call -- single-arg callable.
+        stub._va_effective_background_path = lambda entry: (
+            effective_path_by_entry.get(entry.entry_id)
+        )
+        return stub
+
+    def _build_mocks_for_entries(self, entry_ids):
+        """Helper: build {entry_id: mock_entry_data} with a MagicMock manager
+        on each, so the bridge pushes to the matching entry's manager."""
+        va_devices = {}
+        for eid in entry_ids:
+            mgr = MagicMock()
+            mgr._set_background_image = AsyncMock(return_value=None)
+            va_devices[eid] = {"BackgroundImageManager": mgr}
+        return va_devices
+
+    def test_pushes_to_matching_manager(self):
+        """When an entry's effective path matches, _set_background_image is
+        scheduled on that entry's BackgroundImageManager. The URL has the
+        same ?v=YYYYMMDDHHMMSS cache-buster VA's _make_url_from_path uses.
+        """
+        entry = types.SimpleNamespace(
+            entry_id="entry-A",
+            options={"background_settings": {"rotate_background_path": "images/jax-stream/sub"}},
+        )
+
+        va_devices = self._build_mocks_for_entries(["entry-A"])
+        stub = self._make_stub(
+            va_devices=va_devices,
+            effective_path_by_entry={"entry-A": "images/jax-stream/sub"},
+        )
+
+        tasks = []
+        stub.hass.async_create_task = lambda task: tasks.append(task)
+        stub.hass.config_entries = types.SimpleNamespace(
+            async_entries=lambda domain: [entry] if domain == "view_assist" else [],
+        )
+
+        JaxStreamCoordinator._notify_view_assist(stub)
+
+        # Drain scheduled tasks synchronously.
+        import asyncio
+        loop = asyncio.new_event_loop()
+        try:
+            for t in tasks:
+                loop.run_until_complete(t)
+        finally:
+            loop.close()
+
+        mgr = self._mgrs["entry-A"]
+        mgr._set_background_image.assert_called_once()
+        url_arg = mgr._set_background_image.call_args[0][0]
+        self.assertIn("/view_assist/images/jax-stream/sub/random.jpg", url_arg)
+        self.assertIn("?v=", url_arg)
+
+    def test_skips_non_matching_entry(self):
+        """Entries whose effective rotate_background_path points elsewhere
+        are not pushed to -- their BackgroundImageManager is never called.
+        """
+        other_entry = types.SimpleNamespace(
+            entry_id="entry-other",
+            options={"background_settings": {"rotate_background_path": "images/another-stream"}},
+        )
+
+        va_devices = self._build_mocks_for_entries(["entry-other"])
+        stub = self._make_stub(
+            va_devices=va_devices,
+            effective_path_by_entry={"entry-other": "images/another-stream"},
+        )
+        stub.hass.async_create_task = lambda task: None
+        stub.hass.config_entries = types.SimpleNamespace(
+            async_entries=lambda domain: [other_entry] if domain == "view_assist" else [],
+        )
+
+        JaxStreamCoordinator._notify_view_assist(stub)
+        self._mgrs["entry-other"]._set_background_image.assert_not_called()
+
+    def test_skips_entry_without_manager(self):
+        """Entries without a BackgroundImageManager slot (e.g. Master
+        Configuration) are not pushed to. The path may match, but the
+        manager is missing -- the bridge treats that as 'not a display
+        device' and moves on.
+        """
+        matching_entry_no_mgr = types.SimpleNamespace(
+            entry_id="entry-no-mgr",
+            options={"background_settings": {"rotate_background_path": "images/jax-stream/sub"}},
+        )
+        stub = types.SimpleNamespace()
+        stub.disk_path = "/config/view_assist/images/jax-stream/sub/random.jpg"
+        stub._stream_subdir = "sub"
+        stub.hass = types.SimpleNamespace(
+            config=types.SimpleNamespace(config_dir="/config"),
+            data={"view_assist": {"devices": {"entry-no-mgr": {}}}},
+        )
+        stub._va_effective_background_path = (
+            lambda entry: "images/jax-stream/sub"
+        )
+        stub.hass.async_create_task = lambda task: None
+        stub.hass.config_entries = types.SimpleNamespace(
+            async_entries=lambda domain: [matching_entry_no_mgr] if domain == "view_assist" else [],
+        )
+
+        # Should not raise even though there's no manager.
+        JaxStreamCoordinator._notify_view_assist(stub)
+
+    def test_no_op_when_view_assist_uninstalled(self):
+        """Missing view_assist.data is a silent no-op."""
+        stub = self._make_stub(va_devices=None)
+        stub.hass.config_entries = types.SimpleNamespace(
+            async_entries=lambda domain: [],
+        )
+        JaxStreamCoordinator._notify_view_assist(stub)
 
 
 if __name__ == "__main__":
